@@ -8,15 +8,13 @@ import {
   ActivityIndicator,
   Modal,
   TouchableOpacity,
-  Platform,
 } from 'react-native';
 import { FontAwesome5 } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { Switch } from 'react-native';
 import Sidebar from '../components/Sidebar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const AddProductScreen = () => {
+const AddProductExpediteur = () => {
   const navigation = useNavigation();
   const route = useRoute();
   const { category } = route.params || {};
@@ -33,13 +31,13 @@ const AddProductScreen = () => {
 
   // Use the passed category or fallback to a default
   const CATEGORY_ID = category?.id;
-  const CATEGORY_NAME = category?.name;
+  const CATEGORY_NAME = category?.name || 'Unknown Category';
 
   const options = [
-    { title: 'Users', icon: 'users', screen: 'UserManagement' },
-    { title: 'Station', icon: 'tasks', screen: 'Station' },
-    { title: 'Menu', icon: 'utensils', screen: 'MenuManagement' },
-    { title: 'Order', icon: 'list', screen: 'OrderView' },
+    { title: 'Users', icon: 'users', screen: 'UserExpediteur' },
+    { title: 'Station', icon: 'tasks', screen: 'StationExpediteur' },
+    { title: 'Menu', icon: 'utensils', screen: 'MenuExpediteur' },
+    { title: 'Order', icon: 'list', screen: 'ExpediteurView' },
     { title: 'Logout', icon: 'sign-out-alt', screen: 'Login' },
   ];
 
@@ -47,17 +45,25 @@ const AddProductScreen = () => {
   const getStoreId = async () => {
     try {
       const selectedStoreId = await AsyncStorage.getItem('selectedStoreId');
+      const token = await AsyncStorage.getItem('userToken');
       console.log('Selected Store ID:', selectedStoreId);
-      if (!selectedStoreId) {
-        alertWithStyle('Erreur', 'Aucun magasin sélectionné. Veuillez vous reconnecter.');
-        navigation.navigate('RestaurantAuth');
+      console.log('User Token:', token);
+      if (!selectedStoreId || !token) {
+        alertWithStyle(
+          'Erreur',
+          'Aucun magasin ou jeton sélectionné. Veuillez vous reconnecter.',
+          () => navigation.navigate('RestaurantAuth')
+        );
         return null;
       }
       return selectedStoreId;
     } catch (error) {
       console.error('Erreur lors de la récupération du storeId:', error);
-      alertWithStyle('Erreur', 'Impossible de récupérer le magasin sélectionné.');
-      navigation.navigate('RestaurantAuth');
+      alertWithStyle(
+        'Erreur',
+        'Impossible de récupérer le magasin sélectionné.',
+        () => navigation.navigate('RestaurantAuth')
+      );
       return null;
     }
   };
@@ -66,88 +72,51 @@ const AddProductScreen = () => {
     if (!storeId || !CATEGORY_ID) return;
     setIsLoading(true);
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/manager/menu/getallproductsbycategorybystoreid/${storeId}/${CATEGORY_ID}`,
-        {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        }
-      );
+      const token = await AsyncStorage.getItem('userToken');
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+
+      const url = `${API_BASE_URL}/manager/menu/getallproductsbycategorybystoreid/${storeId}/${CATEGORY_ID}`;
+      console.log('Fetching products from:', url);
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
       if (!response.ok) {
-        throw new Error(`Erreur HTTP ! Statut : ${response.status}`);
+        const errorText = await response.text();
+        console.error('Server response:', errorText);
+        if (response.status === 404) {
+          throw new Error('Products endpoint not found. Verify storeId, categoryId, or server configuration.');
+        }
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
 
       const contentType = response.headers.get('content-type');
       if (!contentType || !contentType.includes('application/json')) {
-        throw new Error('Réponse non-JSON reçue du serveur');
+        const errorText = await response.text();
+        throw new Error(`Expected JSON, received ${contentType}: ${errorText.slice(0, 200)}`);
       }
 
       const data = await response.json();
       const products = (data.products || data.produits || []).map((product) => ({
         ...product,
         id: product._id || product.id,
-        isActive: product.availability ?? true, // Use availability from server
+        name: product.name || 'Unnamed Product',
+        description: product.description || '',
+        price: product.price || 0,
       }));
       setFilteredProducts(products);
     } catch (error) {
-      console.error('Erreur lors du chargement des données :', error);
-      alertWithStyle('Erreur', `Impossible de charger les données : ${error.message}`);
+      console.error('Erreur lors du chargement des données:', error.message);
+      alertWithStyle('Erreur', `Impossible de charger les données: ${error.message}`);
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const toggleProduct = async (productId) => {
-    if (!storeId) return;
-    try {
-      const currentProduct = filteredProducts.find((product) => product.id === productId);
-      if (!currentProduct) {
-        throw new Error('Produit non trouvé');
-      }
-
-      const newValue = !currentProduct.isActive;
-
-      // Optimistic UI update
-      const updatedProducts = filteredProducts.map((product) =>
-        product.id === productId ? { ...product, isActive: newValue } : product
-      );
-      setFilteredProducts(updatedProducts);
-
-      // API call
-      const response = await fetch(`${API_BASE_URL}/owner/products/${productId}/toggle-availability`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          idProduct: productId,
-          value: newValue,
-          storeId: storeId,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(`Échec de la mise à jour du produit : ${response.status} - ${errorData.error || 'Erreur inconnue'}`);
-      }
-
-      const updatedProduct = await response.json();
-
-      // Update product based on actual server response
-      setFilteredProducts((prev) =>
-        prev.map((product) =>
-          product.id === productId ? { ...product, isActive: updatedProduct.availability } : product
-        )
-      );
-
-      alertWithStyle('Succès', 'Produit mis à jour avec succès !');
-    } catch (error) {
-      console.error('Erreur lors de la mise à jour du produit :', error.message);
-      alertWithStyle('Erreur', `Erreur lors de la mise à jour : ${error.message}`);
-      await fetchProducts(); // Re-fetch to revert to server state
     }
   };
 
@@ -168,7 +137,7 @@ const AddProductScreen = () => {
 
   // Fetch products when storeId or CATEGORY_ID changes
   useEffect(() => {
-    if (storeId) {
+    if (storeId && CATEGORY_ID) {
       fetchProducts();
     }
   }, [storeId, CATEGORY_ID]);
@@ -197,7 +166,7 @@ const AddProductScreen = () => {
     header: {
       fontSize: 28 * fontScale,
       fontWeight: '700',
-      color: '#000',
+      color: '#E73E01',
       textAlign: 'left',
     },
     subHeader: {
@@ -218,9 +187,6 @@ const AddProductScreen = () => {
       paddingHorizontal: 15,
       borderBottomWidth: 1,
       borderBottomColor: '#E0E0E0',
-    },
-    switch: {
-      transform: Platform.OS === 'ios' ? [{ scaleX: 0.8 }, { scaleY: 0.8 }] : [],
     },
     productDetails: {
       flex: 1,
@@ -260,12 +226,12 @@ const AddProductScreen = () => {
       borderRadius: 15,
       backgroundColor: '#FFF',
       borderWidth: 2,
-      borderColor: '#E73E01',
+      borderColor: '#000',
     },
     alertTitle: {
       fontSize: 22 * fontScale,
       fontWeight: '700',
-      color: '#E73E01',
+      color: '#000',
       marginBottom: 15,
       textAlign: 'center',
     },
@@ -281,7 +247,7 @@ const AddProductScreen = () => {
       justifyContent: 'space-around',
     },
     alertButtonConfirm: {
-      backgroundColor: '#E73E01',
+      backgroundColor: '#000',
       paddingVertical: 12,
       paddingHorizontal: 25,
       borderRadius: 10,
@@ -313,7 +279,7 @@ const AddProductScreen = () => {
       <Sidebar options={options} />
       <View style={styles.content}>
         <View style={styles.headerContainer}>
-          <TouchableOpacity onPress={() => navigation.navigate('MenuManagement')}>
+          <TouchableOpacity onPress={() => navigation.navigate('MenuExpediteur')}>
             <FontAwesome5 name="arrow-left" size={24} color="#000" style={styles.backArrow} />
           </TouchableOpacity>
           <View>
@@ -324,38 +290,29 @@ const AddProductScreen = () => {
 
         {isLoading || !storeId ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#E73E01" />
+            <ActivityIndicator size="large" color="#000" />
             <Text style={{ marginTop: 10, fontSize: 16 * fontScale, color: '#767577' }}>
               {storeId ? 'Chargement des produits...' : 'Chargement du magasin...'}
             </Text>
           </View>
         ) : (
-          <>
-            <ScrollView style={styles.productList}>
-              {filteredProducts.length > 0 ? (
-                filteredProducts.map((product) => (
-                  <View key={product.id} style={styles.productContainer}>
-                    <Switch
-                      value={product.isActive}
-                      onValueChange={() => toggleProduct(product.id)}
-                      trackColor={{ false: '#D3D3D3', true: '#D2691E' }}
-                      thumbColor="#D2691E"
-                      style={styles.switch}
-                    />
-                    <View style={styles.productDetails}>
-                      <Text style={styles.productName}>{product.name.toUpperCase()}</Text>
-                      <Text style={styles.productDescription}>{product.description}</Text>
-                      <Text style={styles.productPrice}>Prix : {product.price}€</Text>
-                    </View>
+          <ScrollView style={styles.productList}>
+            {filteredProducts.length > 0 ? (
+              filteredProducts.map((product) => (
+                <View key={product.id} style={styles.productContainer}>
+                  <View style={styles.productDetails}>
+                    <Text style={styles.productName}>{product.name.toUpperCase()}</Text>
+                    <Text style={styles.productDescription}>{product.description}</Text>
+                    <Text style={styles.productPrice}>Prix: {product.price}€</Text>
                   </View>
-                ))
-              ) : (
-                <Text style={styles.noProductsText}>
-                  Aucun produit trouvé pour {CATEGORY_NAME}.
-                </Text>
-              )}
-            </ScrollView>
-          </>
+                </View>
+              ))
+            ) : (
+              <Text style={styles.noProductsText}>
+                Aucun produit trouvé pour {CATEGORY_NAME}.
+              </Text>
+            )}
+          </ScrollView>
         )}
 
         {customAlert.visible && (
@@ -394,4 +351,4 @@ const AddProductScreen = () => {
   );
 };
 
-export default AddProductScreen;
+export default AddProductExpediteur;

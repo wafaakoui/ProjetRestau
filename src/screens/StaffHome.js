@@ -1,52 +1,64 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
   FlatList,
   TouchableOpacity,
-  Modal,
-  StyleSheet,
   Animated,
-  Dimensions,
+  StyleSheet,
   Alert,
+  Dimensions,
+  Modal,
   ScrollView,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
-import * as Print from 'expo-print';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import io from 'socket.io-client';
 import Sidebar from '../components/Sidebar';
 
 const { width } = Dimensions.get('window');
 const fontScale = width > 375 ? 1 : 0.9;
-const ticketSize = 200;
-const ticketHeight = 220;
+const ticketSize = 240;
+const ticketHeight = 200; // Réduit pour un affichage plus compact
 
 const StaffHome = () => {
   const navigation = useNavigation();
-  const [allOrders, setAllOrders] = useState([]);
+  const route = useRoute();
+  const { chefId } = route.params || {};
+  const [storeId] = useState('67d7fd4a1dca285cd9d0b38d');
+  const [orders, setOrders] = useState([]);
   const [filteredOrders, setFilteredOrders] = useState([]);
-  const [filteredStatus, setFilteredStatus] = useState('');
-  const [selectedChefType, setSelectedChefType] = useState('All'); // Filtre par type de chef
+  const [stations, setStations] = useState([]);
+  const [currentStation, setCurrentStation] = useState('All');
+  const [currentStatus, setCurrentStatus] = useState('All');
   const [currentPage, setCurrentPage] = useState(1);
-  const [isLastPage, setIsLastPage] = useState(false);
-  const ordersPerPage = 10;
-  const [printPreviewVisible, setPrintPreviewVisible] = useState(false);
-  const [printContent, setPrintContent] = useState([]);
-  const [selectedOrder, setSelectedOrder] = useState(null);
-  const [modalVisible, setModalVisible] = useState(false);
   const [fadeAnim] = useState(new Animated.Value(0));
-  const [timer, setTimer] = useState(0);
-  const [completedItems, setCompletedItems] = useState({}); // Track completed items per order
-  const storeId = '6787a808bf529e8ce963a350';
-
-  const chefTypes = ['All', 'Pizza', 'Tacos', 'Salade']; // Types de chefs disponibles
+  const [socket, setSocket] = useState(null);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const ordersPerPage = 10;
+  const serverUrl = 'https://server.eatorder.fr:8000';
 
   const options = [
-    { title: 'Commande', icon: 'list', screen: 'StaffHome' },
-    { title: 'Logout', icon: 'sign-out-alt', screen: 'Login' },
+    { title: 'Commandes', icon: 'list', screen: 'StaffHome' },
+    {
+      title: 'Déconnexion',
+      icon: 'sign-out-alt',
+      screen: 'Login',
+      onPress: async () => {
+        await AsyncStorage.removeItem('userToken');
+        navigation.navigate('Login');
+      },
+    },
   ];
 
+  const statusFilters = ['All', 'Pending', 'Ready', 'Missed'];
+
   const formatTime = (dateString) => {
-    return new Date(dateString).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    return new Date(dateString).toLocaleTimeString('fr-FR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   };
 
   const formatDate = (dateString) => {
@@ -58,646 +70,579 @@ const StaffHome = () => {
   };
 
   const mapStatus = (status) => {
-    if (status === 'pending' || status === 'created' || status === 'new') return 'Pending';
-    if (status === 'accepted') return 'Ready';
-    if (status === 'missed') return 'Missed';
-    return status;
+    const statusMap = {
+      pending: 'Pending',
+      created: 'Pending',
+      accepted: 'Ready',
+      missed: 'Missed',
+      rejected: 'Missed',
+    };
+    return statusMap[status] || status || 'Unknown';
   };
 
-  const fetchOrders = async (page = 1) => {
+  const fetchStations = async () => {
     try {
-      if (!storeId) throw new Error('storeId is missing');
-      const url = `https://server.eatorder.fr:8000/owner/orders/${storeId}?page=${page}&limit=${ordersPerPage}`;
-      const response = await fetch(url);
-      const data = await response.json();
-      console.log('Données brutes de l\'API:', data); // Log pour débogage
-      if (!response.ok || !data) throw new Error(data.message || 'No orders found');
+      const token = await AsyncStorage.getItem('userToken');
+      if (!token) throw new Error('No authentication token found');
 
-      const mappedOrders = data.map((order, index) => ({
-        id: order._id,
-        orderNumber: `ORDER-${index + 1 + (page - 1) * ordersPerPage}`,
-        uniqueId: order._id,
-        time: formatTime(order.createdAt),
-        date: formatDate(order.createdAt),
-        items: order.items?.map(item => ({
-          name: item.name,
-          quantity: item.quantity || 1,
-          category: item.category || 'unknown', // Catégorie pour filtrage par chef
-        })) || [],
-        totalPrice: order.price_total || 0,
-        status: mapStatus(order.status),
-        createdAt: order.createdAt,
-        clientName: `${order.client_first_name || ''} ${order.client_last_name || ''}`.trim(),
-        orderDetails: order.items?.map(item => `${item.name} x${item.quantity}`).join(', ') || 'No details',
-      }));
-
-      const sortedOrders = mappedOrders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-      setAllOrders(sortedOrders);
-      setIsLastPage(sortedOrders.length < ordersPerPage);
-    } catch (error) {
-      console.error('Error fetching orders:', error);
-      Alert.alert('Erreur', 'Impossible de charger les commandes. Essayez avec le serveur local ?', [
-        { text: 'Annuler', style: 'cancel' },
-        { text: 'Utiliser le serveur local', onPress: () => fetchOrdersFromLocal(page) },
-      ]);
-    }
-  };
-
-  const fetchOrdersFromLocal = async (page = 1) => {
-    try {
-      const url = `http://localhost:3000/api/orders/${storeId}?page=${page}&limit=${ordersPerPage}`;
-      const response = await fetch(url);
-      const data = await response.json();
-      console.log('Données brutes du serveur local:', data); // Log pour débogage
-      if (!response.ok || !data.orders) throw new Error(data.message || 'No orders found');
-
-      const mappedOrders = data.orders.map((order, index) => ({
-        id: order._id,
-        orderNumber: `ORDER-${index + 1 + (page - 1) * ordersPerPage}`,
-        uniqueId: order._id,
-        time: formatTime(order.createdAt),
-        date: formatDate(order.createdAt),
-        items: order.items?.map(item => ({
-          name: item.name,
-          quantity: item.quantity || 1,
-          category: item.category || 'unknown',
-        })) || [],
-        totalPrice: order.price_total || 0,
-        status: mapStatus(order.status),
-        createdAt: order.createdAt,
-        clientName: `${order.client_first_name || ''} ${order.client_last_name || ''}`.trim(),
-        orderDetails: order.items?.map(item => `${item.name} x${item.quantity}`).join(', ') || 'No details',
-      }));
-
-      const sortedOrders = mappedOrders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-      setAllOrders(sortedOrders);
-      setIsLastPage(data.isLastPage || sortedOrders.length < ordersPerPage);
-      Alert.alert('Succès', 'Connecté au serveur local.');
-    } catch (error) {
-      console.error('Error fetching from local server:', error);
-      Alert.alert('Erreur', 'Impossible de se connecter au serveur local.');
-    }
-  };
-
-  const updateOrderStatus = async (orderId) => {
-    try {
-      const url = `https://server.eatorder.fr:8000/owner/orders/${orderId}/status`;
-      const response = await fetch(url, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'accepted' }),
+      const response = await fetch(`${serverUrl}/getstations/${storeId}`, {
+        headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.message || 'Failed to update status');
-
-      setAllOrders(prevOrders =>
-        prevOrders.map(order =>
-          order.id === orderId ? { ...order, status: 'Ready' } : order
-        )
-      );
-      Alert.alert('Succès', 'Commande marquée comme Ready');
+      if (response.ok && data.stations) {
+        setStations(['All', ...data.stations.map((station) => station.name)]);
+      } else {
+        throw new Error(data.message || 'Failed to fetch stations');
+      }
     } catch (error) {
-      console.error('Error updating order status:', error);
-      Alert.alert('Erreur', 'Impossible de mettre à jour le statut de la commande');
+      console.error('Error fetching stations:', error);
+      Alert.alert('Erreur', 'Impossible de charger les stations.');
+      setStations(['All']);
     }
   };
 
+  const updateOrderStatus = async (orderId, newStatus) => {
+    try {
+      const token = await AsyncStorage.getItem('userToken');
+      if (!token) throw new Error('No authentication token found');
+
+      const order = orders.find((o) => o.id === orderId);
+      if (order.status === mapStatus(newStatus)) return;
+
+      const response = await fetch(`${serverUrl}/owner/orders/${orderId}/status`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: newStatus }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.message || 'Failed to update status');
+      }
+
+      await fetchOrders(currentPage);
+      Alert.alert('Succès', `Commande marquée comme ${newStatus === 'accepted' ? 'Prête' : 'Manquée'}`);
+    } catch (error) {
+      console.error('Error updating status:', error);
+      Alert.alert('Erreur', 'Impossible de mettre à jour le statut de la commande.');
+    }
+  };
+
+  const fetchOrders = useCallback(
+    async (page = 1) => {
+      try {
+        const token = await AsyncStorage.getItem('userToken');
+        if (!token) throw new Error('No authentication token found');
+
+        const response = await fetch(
+          `${serverUrl}/owner/orders/${storeId}?page=${page}&limit=${ordersPerPage}`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        );
+        const data = await response.json();
+
+        if (!response.ok) throw new Error(data.message || 'No orders found');
+
+        const ordersData = data?.data || data || [];
+        const mappedOrders = ordersData.map((order, index) => ({
+          id: order._id,
+          orderNumber: `ORDER-${index + 1 + (page - 1) * ordersPerPage}`,
+          uniqueId: order._id,
+          time: formatTime(order.createdAt),
+          date: formatDate(order.createdAt),
+          items: order.items?.map((item) => ({
+            name: item.name,
+            quantity: item.quantity || 1,
+            station: item.station || 'Unknown',
+          })) || [],
+          totalPrice: order.price_total || 0,
+          status: mapStatus(order.status),
+          createdAt: order.createdAt,
+          clientName: `${order.client_first_name || ''} ${order.client_last_name || ''}`.trim() || 'N/A',
+          orderDetails: order.items?.map((item) => `${item.name} x${item.quantity}`).join(', ') || 'No details',
+        }));
+
+        const sortedOrders = mappedOrders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        setOrders(sortedOrders);
+      } catch (error) {
+        console.error('Error fetching orders:', error);
+        Alert.alert('Erreur', 'Impossible de charger les commandes.');
+        setOrders([]);
+      }
+    },
+    [storeId, serverUrl]
+  );
+
+  const filterOrders = useCallback(() => {
+    let filtered = [...orders];
+
+    if (currentStation !== 'All') {
+      filtered = filtered.filter((order) =>
+        order.items.some((item) => item.station === currentStation)
+      );
+    }
+
+    if (currentStatus !== 'All') {
+      filtered = filtered.filter((order) => order.status === currentStatus);
+    }
+
+    setFilteredOrders(filtered);
+  }, [orders, currentStation, currentStatus]);
+
   useEffect(() => {
-    fetchOrders(currentPage);
+    filterOrders();
+  }, [orders, currentStation, currentStatus, filterOrders]);
+
+  useEffect(() => {
+    const setup = async () => {
+      try {
+        const token = await AsyncStorage.getItem('userToken');
+        if (!token) {
+          Alert.alert('Erreur', 'Veuillez vous connecter.', [
+            { text: 'OK', onPress: () => navigation.navigate('Login') },
+          ]);
+          return;
+        }
+
+        await Promise.all([fetchOrders(currentPage), fetchStations()]);
+
+        const socketInstance = io(serverUrl, {
+          auth: { token },
+          transports: ['websocket'],
+          query: { storeId, userId: chefId },
+        });
+
+        socketInstance.on('connect', () => console.log('WebSocket connected'));
+        socketInstance.on('orderUpdate', () => fetchOrders(currentPage));
+        socketInstance.on('connect_error', (error) => console.error('WebSocket error:', error));
+        socketInstance.on('disconnect', () => console.log('WebSocket disconnected'));
+
+        setSocket(socketInstance);
+
+        return () => socketInstance.disconnect();
+      } catch (error) {
+        console.error('Setup error:', error);
+        Alert.alert('Erreur', 'Échec du chargement initial.');
+      }
+    };
+
+    setup();
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 500,
       useNativeDriver: true,
     }).start();
-  }, [currentPage]);
 
-  useEffect(() => {
-    let filtered = allOrders;
-    console.log('Filtrage - allOrders:', allOrders, 'filteredStatus:', filteredStatus, 'selectedChefType:', selectedChefType);
-    if (filteredStatus === 'Pending') {
-      filtered = allOrders.filter(order => order.status === 'Pending');
-    } else if (filteredStatus === 'Ready') {
-      filtered = allOrders.filter(order => order.status === 'Ready');
-    } else if (filteredStatus === 'Missed') {
-      filtered = allOrders.filter(order => order.status === 'Missed');
-    }
-    if (selectedChefType !== 'All') {
-      filtered = filtered.filter(order =>
-        order.items.some(item =>
-          item.category.toLowerCase() === selectedChefType.toLowerCase() ||
-          item.name.toLowerCase().includes(selectedChefType.toLowerCase())
-        )
-      );
-    }
-    console.log('filteredOrders:', filtered);
-    setFilteredOrders(filtered);
-    setCurrentPage(1);
-  }, [allOrders, filteredStatus, selectedChefType]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setTimer(prev => prev + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const printOrder = (orderId) => {
-    const order = allOrders.find(o => o.id === orderId);
-    if (order) {
-      setPrintContent([order]);
-      setPrintPreviewVisible(true);
-    } else {
-      Alert.alert('Erreur', 'Commande non trouvée');
-    }
-  };
-
-  const handlePrint = async () => {
-    try {
-      const html = `
-        <html>
-          <head>
-            <style>
-              body { font-family: Arial, sans-serif; background-color: #f5f5f5; }
-              .order { margin-bottom: 20px; padding: 15px; border: 1px solid #E73E01; border-radius: 8px; background-color: #FFF; }
-              .completed { background-color: #d4edda; }
-              .in-progress { background-color: #fff3cd; }
-              .missed { background-color: #f8d7da; }
-              .date { margin-top: 20px; font-style: italic; color: #666; }
-              hr { border: 1px dashed #E73E01; margin: 10px 0; }
-              h2 { color: #E73E01; text-align: center; }
-              p { margin: 5px 0; }
-            </style>
-          </head>
-          <body>
-            <h2>Aperçu avant impression</h2>
-            ${printContent.map(order => `
-              <div class="order ${order.status === 'Ready' ? 'completed' : order.status === 'Missed' ? 'missed' : 'in-progress'}">
-                <p><strong>Commande:</strong> ${order.orderNumber}</p>
-                <p><strong>Client:</strong> ${order.clientName || 'N/A'}</p>
-                <p><strong>Date:</strong> ${order.date}</p>
-                <p><strong>Heure:</strong> ${order.time}</p>
-                <p><strong>ID Unique:</strong> ${order.uniqueId}</p>
-                <p><strong>Articles:</strong></p>
-                <ul>
-                  ${order.items.map(item => `<li>${item.name} x${item.quantity}</li>`).join('')}
-                </ul>
-                <p><strong>Total:</strong> ${order.totalPrice} EUR</p>
-                <p><strong>Statut:</strong> ${order.status}</p>
-              </div>
-            `).join('')}
-            <p class="date">Imprimé le: ${new Date().toLocaleString('fr-FR')}</p>
-          </body>
-        </html>
-      `;
-      await Print.printAsync({ html });
-      Alert.alert('Succès', 'Commande(s) envoyée à l’imprimante');
-    } catch (error) {
-      Alert.alert('Erreur', 'Échec de l’impression: ' + error.message);
-    }
-    setPrintPreviewVisible(false);
-  };
-
-  const totalPages = Math.ceil(filteredOrders.length / ordersPerPage);
-  const paginatedOrders = filteredOrders.slice(
-    (currentPage - 1) * ordersPerPage,
-    currentPage * ordersPerPage
-  );
-
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
-
-  const toggleItemCompletion = (orderId, itemIndex) => {
-    setCompletedItems(prev => {
-      const orderItems = prev[orderId] || {};
-      const newOrderItems = { ...orderItems, [itemIndex]: !orderItems[itemIndex] };
-      console.log('completedItems après mise à jour:', { ...prev, [orderId]: newOrderItems });
-      return { ...prev, [orderId]: newOrderItems };
-    });
-  };
-
-  const areAllItemsCompleted = (orderId, items) => {
-    const orderItems = completedItems[orderId] || {};
-    const allCompleted = items.every((_, index) => orderItems[index]);
-    console.log(`Order ${orderId} - Tous complétés ?`, allCompleted, 'orderItems:', orderItems);
-    return allCompleted;
-  };
-
-  const handleValidate = (orderId, items) => {
-    if (areAllItemsCompleted(orderId, items)) {
-      Alert.alert(
-        'Confirmer la validation',
-        'Voulez-vous marquer cette commande comme Ready ?',
-        [
-          { text: 'Annuler', style: 'cancel' },
-          {
-            text: 'Confirmer',
-            onPress: () => {
-              updateOrderStatus(orderId);
-              setCompletedItems(prev => {
-                const newState = { ...prev };
-                delete newState[orderId];
-                return newState;
-              });
-            },
-          },
-        ]
-      );
-    } else {
-      Alert.alert('Erreur', 'Veuillez compléter tous les articles avant de valider.');
-    }
-  };
-
-  const numColumns = Math.min(Math.max(Math.floor((width - 40) / ticketSize), 1), 5);
+    return () => {
+      if (socket) socket.disconnect();
+    };
+  }, [currentPage, chefId, fetchOrders, serverUrl]);
 
   const renderOrderItem = ({ item }) => {
-    const creationTime = new Date(item.createdAt);
-    const timeElapsed = Math.floor((new Date() - creationTime) / 1000);
-    const minutes = Math.floor(timeElapsed / 60).toString().padStart(2, '0');
-    const seconds = (timeElapsed % 60).toString().padStart(2, '0');
-    const isPending = item.status === 'Pending';
-    const allCompleted = isPending && areAllItemsCompleted(item.id, item.items);
+    const statusColors = {
+      Ready: { bg: '#d4edda', border: '#28a745' },
+      Missed: { bg: '#f8d7da', border: '#dc3545' },
+      Pending: { bg: '#fff3cd', border: '#E73E01' },
+    };
 
     return (
       <Animated.View
         style={[
-          kdsStyles.ticketContainer,
-          item.status === 'Ready' && { backgroundColor: '#d4edda' },
-          item.status === 'Missed' && { backgroundColor: '#f8d7da' },
+          styles.ticketContainer,
+          statusColors[item.status] && {
+            backgroundColor: statusColors[item.status].bg,
+            borderColor: statusColors[item.status].border,
+          },
           { opacity: fadeAnim },
         ]}
       >
-        <View style={kdsStyles.ticketHeader}>
-          <Text style={kdsStyles.timeDate}>
-            {item.time} | {item.date}
+        <View style={styles.ticketContent}>
+          <Text style={styles.orderDetails}>
+            Articles: {item.items.map((i) => `${i.name} x${i.quantity}`).join(', ')}
           </Text>
-          <Text style={kdsStyles.timer}>{`${minutes}:${seconds}`}</Text>
-        </View>
-        <View style={kdsStyles.ticketContent}>
-          <Text style={kdsStyles.orderNumber}>#{item.orderNumber}</Text>
-          <FlatList
-            data={item.items}
-            renderItem={({ item: orderItem, index }) => (
-              <View style={kdsStyles.itemRow}>
-                <TouchableOpacity
-                  onPress={() => isPending && toggleItemCompletion(item.id, index)}
-                  style={kdsStyles.radioButton}
-                  disabled={!isPending}
-                >
-                  <View
-                    style={[
-                      kdsStyles.radioCircle,
-                      isPending && completedItems[item.id]?.[index] && kdsStyles.radioCircleChecked,
-                      !isPending && kdsStyles.radioCircleDisabled,
-                    ]}
-                  />
-                </TouchableOpacity>
-                <Text style={kdsStyles.orderDetails}>
-                  • {orderItem.name} x{orderItem.quantity}
-                </Text>
-              </View>
-            )}
-            keyExtractor={(orderItem, index) => index.toString()}
-            style={{ maxHeight: 60 }}
-          />
-          <View style={kdsStyles.actionRow}>
+          <Text style={styles.orderDetails}>Statut: {item.status}</Text>
+          <View style={styles.actionRow}>
             <TouchableOpacity
-              style={kdsStyles.actionButton}
-              onPress={() => printOrder(item.id)}
-            >
-              <Text style={kdsStyles.actionButtonText}>Print</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={kdsStyles.actionButton}
+              style={styles.actionButton}
               onPress={() => {
                 setSelectedOrder(item);
                 setModalVisible(true);
               }}
             >
-              <Text style={kdsStyles.actionButtonText}>Détails</Text>
+              <Text style={styles.actionButtonText}>Détails</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                kdsStyles.actionButton,
-                { backgroundColor: isPending && allCompleted ? '#4CAF50' : '#ccc' },
-              ]}
-              onPress={() => handleValidate(item.id, item.items)}
-              disabled={!isPending || !allCompleted}
-            >
-              <Text style={kdsStyles.actionButtonText}>Valider</Text>
-            </TouchableOpacity>
+            {item.status === 'Pending' && (
+              <View style={styles.statusButtons}>
+                <TouchableOpacity
+                  style={[styles.statusButton, { backgroundColor: '#28a745' }]}
+                  onPress={() => updateOrderStatus(item.id, 'accepted')}
+                >
+                  <Text style={styles.statusButtonText}>Prêt</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.statusButton, { backgroundColor: '#dc3545' }]}
+                  onPress={() => updateOrderStatus(item.id, 'missed')}
+                >
+                  <Text style={styles.statusButtonText}>Manqué</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         </View>
       </Animated.View>
     );
   };
 
-  const renderPrintPreviewModal = () => (
-    <Modal
-      visible={printPreviewVisible}
-      onRequestClose={() => setPrintPreviewVisible(false)}
-      transparent={true}
-      animationType="slide"
-    >
-      <View style={modalStyles.modalContainer}>
-        <View style={modalStyles.modalContent}>
-          <Text style={modalStyles.modalTitle}>Aperçu avant impression</Text>
-          <Text style={modalStyles.modalText}>
-            {printContent.length} commande(s) à imprimer
-          </Text>
-          <ScrollView>
-            {printContent.map((order) => (
-              <View key={order.id}>
-                <Text style={modalStyles.modalText}>Commande {order.orderNumber}</Text>
-                <Text style={modalStyles.modalText}>Client: {order.clientName || 'N/A'}</Text>
-                <Text style={modalStyles.modalText}>Date: {order.date}</Text>
-                <Text style={modalStyles.modalText}>Heure: {order.time}</Text>
-                <Text style={modalStyles.modalText}>ID Unique: {order.uniqueId}</Text>
-                <FlatList
-                  data={order.items}
-                  renderItem={({ item }) => (
-                    <Text style={modalStyles.modalText}>
-                      {item.name} x{item.quantity}
-                    </Text>
-                  )}
-                  keyExtractor={(item, index) => index.toString()}
-                />
-                <Text style={modalStyles.modalText}>Total: {order.totalPrice} EUR</Text>
-                <Text style={modalStyles.modalText}>Statut: {order.status}</Text>
-              </View>
-            ))}
-          </ScrollView>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
+  const renderOrderDetailsModal = () =>
+    selectedOrder && (
+      <Modal
+        visible={modalVisible}
+        onRequestClose={() => setModalVisible(false)}
+        transparent={true}
+        animationType="slide"
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Détails de la Commande</Text>
+            <ScrollView>
+              <Text style={styles.modalText}>Commande: {selectedOrder.orderNumber}</Text>
+              <Text style={styles.modalText}>Client: {selectedOrder.clientName}</Text>
+              <Text style={styles.modalText}>Date: {selectedOrder.date}</Text>
+              <Text style={styles.modalText}>Heure: {selectedOrder.time}</Text>
+              <Text style={styles.modalText}>ID Unique: {selectedOrder.uniqueId}</Text>
+              <Text style={styles.modalText}>Articles:</Text>
+              <FlatList
+                data={selectedOrder.items}
+                renderItem={({ item }) => (
+                  <Text style={styles.modalText}>
+                    • {item.name} x{item.quantity} (Station: {item.station})
+                  </Text>
+                )}
+                keyExtractor={(item, index) => index.toString()}
+              />
+              <Text style={styles.modalText}>Total: {selectedOrder.totalPrice} EUR</Text>
+              <Text style={styles.modalText}>Statut: {selectedOrder.status}</Text>
+            </ScrollView>
             <TouchableOpacity
-              style={[modalStyles.quitButton, { backgroundColor: '#FF0000' }]}
-              onPress={() => setPrintPreviewVisible(false)}
+              style={styles.quitButton}
+              onPress={() => setModalVisible(false)}
             >
-              <Text style={modalStyles.quitButtonText}>Annuler</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={modalStyles.acceptButton}
-              onPress={handlePrint}
-            >
-              <Text style={modalStyles.acceptButtonText}>Imprimer</Text>
+              <Text style={styles.quitButtonText}>Fermer</Text>
             </TouchableOpacity>
           </View>
         </View>
-      </View>
-    </Modal>
+      </Modal>
+    );
+
+  const Pagination = ({ currentPage, totalPages, onPageChange }) => (
+    <View style={styles.paginationContainer}>
+      <TouchableOpacity
+        style={[
+          styles.paginationButton,
+          currentPage === 1 && styles.paginationButtonDisabled,
+        ]}
+        onPress={() => onPageChange(currentPage - 1)}
+        disabled={currentPage === 1}
+      >
+        <Text style={styles.paginationButtonText}>Précédent</Text>
+      </TouchableOpacity>
+      <Text style={styles.pageIndicator}>
+        Page {currentPage} sur {totalPages}
+      </Text>
+      <TouchableOpacity
+        style={[
+          styles.paginationButton,
+          currentPage === totalPages && styles.paginationButtonDisabled,
+        ]}
+        onPress={() => onPageChange(currentPage + 1)}
+        disabled={currentPage === totalPages}
+      >
+        <Text style={styles.paginationButtonText}>Suivant</Text>
+      </TouchableOpacity>
+    </View>
   );
 
-  const renderModal = () => selectedOrder && (
-    <Modal
-      visible={modalVisible}
-      onRequestClose={() => setModalVisible(false)}
-      transparent={true}
-      animationType="slide"
-    >
-      <View style={modalStyles.modalContainer}>
-        <View style={modalStyles.modalContent}>
-          <Text style={modalStyles.modalTitle}>Détails de la commande</Text>
-          <Text style={modalStyles.modalText}>Commande: #{selectedOrder.orderNumber}</Text>
-          <Text style={modalStyles.modalText}>Client: {selectedOrder.clientName || 'N/A'}</Text>
-          <Text style={modalStyles.modalText}>Status: {selectedOrder.status}</Text>
-          <Text style={modalStyles.modalText}>Total: {selectedOrder.totalPrice} EUR</Text>
-          <TouchableOpacity
-            style={modalStyles.quitButton}
-            onPress={() => setModalVisible(false)}
-          >
-            <Text style={modalStyles.quitButtonText}>Quitter</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </Modal>
+  const paginatedOrders = filteredOrders.slice(
+    (currentPage - 1) * ordersPerPage,
+    currentPage * ordersPerPage
   );
+  const totalPages = Math.ceil(filteredOrders.length / ordersPerPage);
+  const numColumns = Math.min(Math.max(Math.floor((width - 40) / ticketSize), 1), 5);
 
   return (
-    <View style={{ flex: 1, flexDirection: 'row' }}>
+    <View style={styles.container}>
       <Sidebar options={options} />
-      <View style={{ flex: 1, padding: 20 }}>
-        <Animated.View style={[localStyles.headerContainer, { opacity: fadeAnim }]}>
-          <Text style={localStyles.header}>Vue des Commandes</Text>
+      <View style={styles.mainContent}>
+        <Animated.View style={[styles.headerContainer, { opacity: fadeAnim }]}>
+          <Text style={styles.header}>Tableau de Bord du Personnel</Text>
         </Animated.View>
-        <View style={staffStyles.filterContainer}>
-          {/* Filtres par statut */}
-          {['', 'Pending', 'Ready', 'Missed'].map(status => (
-            <TouchableOpacity
-              key={status || 'all'}
-              style={[
-                staffStyles.filterButton,
-                filteredStatus === status && staffStyles.filterButtonActive,
-              ]}
-              onPress={() => setFilteredStatus(status)}
-              accessibilityLabel={`Filtrer par ${status || 'ALL'}`}
-            >
-              <Text
+
+        <View style={styles.filterContainer}>
+          <View style={styles.stationFilter}>
+            {stations.map((station) => (
+              <TouchableOpacity
+                key={station}
                 style={[
-                  staffStyles.filterText,
-                  filteredStatus === status && staffStyles.filterTextActive,
+                  styles.stationButton,
+                  currentStation === station && styles.stationButtonActive,
                 ]}
+                onPress={() => {
+                  setCurrentStation(station);
+                  setCurrentStatus('All'); // Réinitialiser le statut lors du changement de station
+                  setCurrentPage(1);
+                }}
               >
-                {status || 'ALL'}
-              </Text>
-            </TouchableOpacity>
-          ))}
-          {/* Filtres par type de chef */}
-          {chefTypes.map(chefType => (
-            <TouchableOpacity
-              key={chefType}
-              style={[
-                staffStyles.filterButton,
-                selectedChefType === chefType && staffStyles.filterButtonActive,
-              ]}
-              onPress={() => setSelectedChefType(chefType)}
-              accessibilityLabel={`Filtrer par ${chefType}`}
-            >
-              <Text
+                <Text
+                  style={[
+                    styles.stationButtonText,
+                    currentStation === station && styles.stationButtonTextActive,
+                  ]}
+                >
+                  {station === 'All' ? 'Toutes' : `Station ${station}`}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <View style={styles.statusFilter}>
+            {statusFilters.map((status) => (
+              <TouchableOpacity
+                key={status}
                 style={[
-                  staffStyles.filterText,
-                  selectedChefType === chefType && staffStyles.filterTextActive,
+                  styles.statusButtonFilter,
+                  currentStatus === status && styles.statusButtonFilterActive,
                 ]}
+                onPress={() => {
+                  setCurrentStatus(status);
+                  setCurrentPage(1);
+                }}
               >
-                {chefType}
-              </Text>
-            </TouchableOpacity>
-          ))}
+                <Text
+                  style={[
+                    styles.statusButtonTextFilter,
+                    currentStatus === status && styles.statusButtonTextFilterActive,
+                  ]}
+                >
+                  {status === 'All' ? 'Tous' : status}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
+
         {filteredOrders.length > 0 ? (
           <>
             <FlatList
               data={paginatedOrders}
               renderItem={renderOrderItem}
-              keyExtractor={item => item.id}
+              keyExtractor={(item) => item.id.toString()}
               numColumns={numColumns}
-              columnWrapperStyle={kdsStyles.columnWrapper}
-              ListEmptyComponent={
-                <Text style={staffStyles.emptyText}>Aucune commande trouvée</Text>
-              }
+              columnWrapperStyle={styles.columnWrapper}
+              ListEmptyComponent={<Text style={styles.emptyText}>Aucune commande disponible.</Text>}
             />
-            <View style={staffStyles.paginationContainer}>
-              <TouchableOpacity
-                style={[
-                  staffStyles.paginationButton,
-                  currentPage === 1 && staffStyles.paginationButtonDisabled,
-                ]}
-                onPress={handlePreviousPage}
-                disabled={currentPage === 1}
-              >
-                <Text style={staffStyles.paginationButtonText}>Précédent</Text>
-              </TouchableOpacity>
-              <Text style={staffStyles.pageText}>Page {currentPage} sur {totalPages || 1}</Text>
-              <TouchableOpacity
-                style={[
-                  staffStyles.paginationButton,
-                  currentPage >= totalPages && staffStyles.paginationButtonDisabled,
-                ]}
-                onPress={handleNextPage}
-                disabled={currentPage >= totalPages}
-              >
-                <Text style={kdsStyles.paginationButtonText}>Suivant</Text>
-              </TouchableOpacity>
-            </View>
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages || 1}
+              onPageChange={setCurrentPage}
+            />
           </>
         ) : (
-          <Text style={staffStyles.emptyText}>Aucune commande</Text>
+          <Text style={styles.emptyText}>Aucune commande disponible.</Text>
         )}
-        {renderPrintPreviewModal()}
-        {renderModal()}
+        {renderOrderDetailsModal()}
       </View>
     </View>
   );
 };
 
-const localStyles = StyleSheet.create({
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: '#f5f5f5',
+  },
+  mainContent: {
+    flex: 1,
+    padding: 20,
+  },
   headerContainer: {
     marginBottom: 20,
-    justifyContent: 'center',
     alignItems: 'center',
   },
   header: {
-    fontSize: 28 * fontScale,
+    fontSize: 24 * fontScale,
     fontWeight: '700',
-    color: '#E73E01',
-    textAlign: 'center',
-    letterSpacing: 1,
+    color: '#ffffff',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    backgroundColor: '#E73E01',
+    borderRadius: 25,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 5,
+    elevation: 5,
   },
-});
-
-const kdsStyles = StyleSheet.create({
+  filterContainer: {
+    marginBottom: 20,
+  },
+  stationFilter: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 10,
+    justifyContent: 'center',
+  },
+  statusFilter: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  stationButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    margin: 5,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E73E01',
+    backgroundColor: '#ffffff',
+  },
+  stationButtonActive: {
+    backgroundColor: '#E73E01',
+  },
+  stationButtonText: {
+    fontSize: 14 * fontScale,
+    color: '#E73E01',
+    fontWeight: '600',
+  },
+  stationButtonTextActive: {
+    color: '#ffffff',
+  },
+  statusButtonFilter: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    margin: 5,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E73E01',
+    backgroundColor: '#ffffff',
+  },
+  statusButtonFilterActive: {
+    backgroundColor: '#E73E01',
+  },
+  statusButtonTextFilter: {
+    fontSize: 14 * fontScale,
+    color: '#E73E01',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  statusButtonTextFilterActive: {
+    color: '#ffffff',
+  },
   ticketContainer: {
     width: ticketSize,
     height: ticketHeight,
-    margin: 5,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    padding: 10,
-    elevation: 4,
+    margin: 8,
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 12,
+    elevation: 5,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    borderWidth: 1,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    borderWidth: 2,
     borderColor: '#E73E01',
-    justifyContent: 'space-between',
-  },
-  ticketHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#FFF5F0',
-    padding: 5,
-    borderRadius: 4,
-    marginBottom: 8,
-  },
-  timeDate: {
-    fontSize: 10 * fontScale,
-    color: '#E73E01',
-    fontWeight: '600',
-  },
-  orderNumber: {
-    fontSize: 12 * fontScale,
-    fontWeight: '700',
-    color: '#E73E01',
-  },
-  timer: {
-    fontSize: 10 * fontScale,
-    color: '#555',
-    fontWeight: '600',
-    backgroundColor: '#F0F0F0',
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: 3,
   },
   ticketContent: {
     flex: 1,
     justifyContent: 'space-between',
   },
   orderDetails: {
-    fontSize: 10 * fontScale,
+    fontSize: 13 * fontScale,
     color: '#333',
-    marginBottom: 4,
-    lineHeight: 12 * fontScale,
+    marginBottom: 6,
   },
   actionRow: {
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    marginTop: 10,
+  },
+  actionButton: {
+    backgroundColor: '#E73E01',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    width: '100%',
+    alignItems: 'center',
+  },
+  actionButtonText: {
+    color: '#ffffff',
+    fontSize: 14 * fontScale,
+    fontWeight: '600',
+  },
+  statusButtons: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     marginTop: 8,
   },
-  actionButton: {
-    backgroundColor: '#E73E01',
-    borderRadius: 15,
-    padding: 5,
+  statusButton: {
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    marginLeft: 8,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 8,
+    elevation: 2,
   },
-  actionButtonText: {
-    color: '#FFFFFF',
-    fontSize: 10 * fontScale,
+  statusButtonText: {
+    color: '#ffffff',
+    fontSize: 12 * fontScale,
     fontWeight: '600',
   },
   columnWrapper: {
     justifyContent: 'center',
   },
-  itemRow: {
+  emptyText: {
+    fontSize: 16 * fontScale,
+    color: '#666',
+    textAlign: 'center',
+    marginVertical: 20,
+  },
+  paginationContainer: {
     flexDirection: 'row',
+    justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 4,
+    marginTop: 20,
+    backgroundColor: '#ffffff',
+    padding: 15,
+    borderRadius: 12,
+    elevation: 5,
   },
-  radioButton: {
-    marginRight: 8,
-  },
-  radioCircle: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: '#E73E01',
-    backgroundColor: '#FFF',
-  },
-  radioCircleChecked: {
+  paginationButton: {
     backgroundColor: '#E73E01',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    marginHorizontal: 10,
+    minWidth: 80,
+    alignItems: 'center',
   },
-  radioCircleDisabled: {
-    borderColor: '#ccc',
-    backgroundColor: '#f0f0f0',
+  paginationButtonDisabled: {
+    backgroundColor: '#d1d1d1',
   },
   paginationButtonText: {
-    color: '#FFFFFF',
-    fontSize: 12 * fontScale,
+    color: '#ffffff',
+    fontSize: 14 * fontScale,
     fontWeight: '600',
   },
-});
-
-const modalStyles = StyleSheet.create({
+  pageIndicator: {
+    fontSize: 14 * fontScale,
+    color: '#333',
+    fontWeight: '600',
+  },
   modalContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -706,6 +651,7 @@ const modalStyles = StyleSheet.create({
   },
   modalContent: {
     width: '80%',
+    maxHeight: '80%',
     backgroundColor: '#FFFFFF',
     borderRadius: 15,
     padding: 20,
@@ -741,81 +687,6 @@ const modalStyles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
     letterSpacing: 0.5,
-  },
-  acceptButton: {
-    backgroundColor: '#4CAF50',
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginTop: 15,
-    elevation: 2,
-  },
-  acceptButtonText: {
-    fontSize: 14 * fontScale,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
-  },
-});
-
-const staffStyles = StyleSheet.create({
-  filterContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginBottom: 20,
-    justifyContent: 'center',
-  },
-  filterButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 15,
-    borderRadius: 20,
-    backgroundColor: '#F0F0F0',
-    marginRight: 10,
-    marginBottom: 10,
-  },
-  filterButtonActive: {
-    backgroundColor: '#E73E01',
-  },
-  filterText: {
-    fontSize: 12 * fontScale,
-    color: '#333',
-    textTransform: 'uppercase',
-  },
-  filterTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  emptyText: {
-    fontSize: 16 * fontScale,
-    color: 'gray',
-    textAlign: 'center',
-    marginVertical: 20,
-  },
-  paginationContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  paginationButton: {
-    backgroundColor: '#E73E01',
-    paddingVertical: 8,
-    paddingHorizontal: 15,
-    borderRadius: 20,
-    marginHorizontal: 10,
-  },
-  paginationButtonDisabled: {
-    backgroundColor: '#ccc',
-  },
-  paginationButtonText: {
-    color: '#FFFFFF',
-    fontSize: 12 * fontScale,
-    fontWeight: '600',
-  },
-  pageText: {
-    fontSize: 12 * fontScale,
-    color: '#333',
   },
 });
 

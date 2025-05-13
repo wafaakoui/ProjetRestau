@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -14,7 +13,9 @@ import {
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import * as Print from 'expo-print';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Sidebar from '../components/Sidebar';
+import io from 'socket.io-client';
 
 const { width } = Dimensions.get('window');
 const fontScale = width > 375 ? 1 : 0.9;
@@ -24,12 +25,11 @@ const ticketHeight = 220;
 const ExpediteurView = () => {
   const navigation = useNavigation();
   const route = useRoute();
-  const storeId = route.params?.storeId || '67d7fd4a1dca285cd9d0b38d'; // Fallback to default if not provided
+  const storeId = route.params?.storeId || '67d7fd4a1dca285cd9d0b38d';
   const [allOrders, setAllOrders] = useState([]);
   const [filteredOrders, setFilteredOrders] = useState([]);
   const [filteredStatus, setFilteredStatus] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
-  const [isLastPage, setIsLastPage] = useState(false);
   const ordersPerPage = 10;
   const [printPreviewVisible, setPrintPreviewVisible] = useState(false);
   const [printContent, setPrintContent] = useState([]);
@@ -39,10 +39,12 @@ const ExpediteurView = () => {
   const [timer, setTimer] = useState(0);
 
   const options = [
-    { title: 'Orders', icon: 'list', screen: 'ExpediteurView' },
+    { title: 'Users', icon: 'users', screen: 'UserExpediteur' },
+    { title: 'Station', icon: 'tasks', screen: 'StationExpediteur' },
+    { title: 'Menu', icon: 'utensils', screen: 'MenuExpediteur' },
+    { title: 'Order', icon: 'list', screen: 'ExpediteurView' },
     { title: 'Logout', icon: 'sign-out-alt', screen: 'Login' },
   ];
-
   const formatTime = (dateString) => {
     return new Date(dateString).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   };
@@ -58,11 +60,11 @@ const ExpediteurView = () => {
   const mapStatus = (status) => {
     if (status === 'pending' || status === 'created') return 'Pending';
     if (status === 'accepted') return 'Ready';
-    if (status === 'missed') return 'Missed';
-    return status;
+    if (status === 'missed' || status === 'rejected') return 'Missed';
+    return status || 'Unknown';
   };
 
-  const fetchOrders = async (page = 1) => {
+  const fetchOrders = async (page = 1, serverUrl) => {
     try {
       if (!storeId) throw new Error('storeId is missing');
       const url = `https://server.eatorder.fr:8000/owner/orders/${storeId}?page=${page}&limit=${ordersPerPage}`;
@@ -89,52 +91,62 @@ const ExpediteurView = () => {
 
       const sortedOrders = mappedOrders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
       setAllOrders(sortedOrders);
-      setIsLastPage(sortedOrders.length < ordersPerPage);
     } catch (error) {
       console.error('Error fetching orders:', error);
-      Alert.alert('Erreur', 'Impossible de charger les commandes. Essayez avec le serveur local ?', [
-        { text: 'Annuler', style: 'cancel' },
-        { text: 'Utiliser le serveur local', onPress: () => fetchOrdersFromLocal(page) },
-      ]);
-    }
-  };
-
-  const fetchOrdersFromLocal = async (page = 1) => {
-    try {
-      const url = `http://localhost:3000/api/orders/${storeId}?page=${page}&limit=${ordersPerPage}`;
-      const response = await fetch(url);
-      const data = await response.json();
-      if (!response.ok || !data.orders) throw new Error(data.message || 'No orders found');
-
-      const mappedOrders = data.orders.map((order, index) => ({
-        id: order._id,
-        orderNumber: `ORDER-${index + 1 + (page - 1) * ordersPerPage}`,
-        uniqueId: order._id,
-        time: formatTime(order.createdAt),
-        date: formatDate(order.createdAt),
-        items: order.items?.map((item) => ({
-          name: item.name,
-          quantity: item.quantity || 1,
-        })) || [],
-        totalPrice: order.price_total || 0,
-        status: mapStatus(order.status),
-        createdAt: order.createdAt,
-        clientName: `${order.client_first_name || ''} ${order.client_last_name || ''}`.trim(),
-        orderDetails: order.items?.map((item) => `${item.name} x${item.quantity}`).join(', ') || 'No details',
-      }));
-
-      const sortedOrders = mappedOrders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-      setAllOrders(sortedOrders);
-      setIsLastPage(data.isLastPage || sortedOrders.length < ordersPerPage);
-      Alert.alert('Succès', 'Connecté au serveur local.');
-    } catch (error) {
-      console.error('Error fetching from local server:', error);
-      Alert.alert('Erreur', 'Impossible de se connecter au serveur local.');
+      throw error;
     }
   };
 
   useEffect(() => {
-    fetchOrders(currentPage);
+    const setup = async () => {
+      try {
+        const token = await AsyncStorage.getItem('userToken');
+        const serverUrl = await AsyncStorage.getItem('selectedServer') || 'https://server.eatorder.fr:8000';
+        
+        await fetchOrders(currentPage, serverUrl);
+
+        const socket = io(serverUrl, {
+          auth: { token },
+          transports: ['websocket'],
+        });
+
+        socket.on('connect', () => {
+          console.log('WebSocket connected for OrderView');
+        });
+
+        socket.on('orderUpdate', (updatedOrder) => {
+          console.log('Received order update:', updatedOrder);
+          // Only fetch if current page data might be affected
+          fetchOrders(currentPage, serverUrl);
+        });
+
+        socket.on('connect_error', (error) => {
+          console.error('WebSocket connection error:', error);
+        });
+
+        socket.on('disconnect', () => {
+          console.log('WebSocket disconnected');
+        });
+
+        return () => {
+          socket.disconnect();
+        };
+      } catch (error) {
+        console.error('Setup error:', error);
+        Alert.alert('Error', 'Failed to load orders. Try local server?', [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Use Local Server',
+            onPress: async () => {
+              await AsyncStorage.setItem('selectedServer', 'http://localhost:3000');
+              fetchOrders(currentPage, 'http://localhost:3000');
+            },
+          },
+        ]);
+      }
+    };
+
+    setup();
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 500,
@@ -149,10 +161,11 @@ const ExpediteurView = () => {
     } else if (filteredStatus === 'Ready') {
       filtered = allOrders.filter((order) => order.status === 'Ready');
     } else if (filteredStatus === 'Missed') {
-      filtered = allOrders.filter((order) => order.status === 'Missed');
+      filtered = allOrders.filter((order) => order.status === 'Missed' || order.status === 'rejected');
     }
     setFilteredOrders(filtered);
-    setCurrentPage(1);
+    // Only reset to page 1 when filter changes, not on every render
+    if (filteredStatus) setCurrentPage(1);
   }, [allOrders, filteredStatus]);
 
   useEffect(() => {
@@ -168,7 +181,7 @@ const ExpediteurView = () => {
       setPrintContent([order]);
       setPrintPreviewVisible(true);
     } else {
-      Alert.alert('Erreur', 'Commande non trouvée');
+      Alert.alert('Error', 'Order not found');
     }
   };
 
@@ -183,6 +196,7 @@ const ExpediteurView = () => {
               .completed { background-color: #d4edda; }
               .in-progress { background-color: #fff3cd; }
               .missed { background-color: #f8d7da; }
+              .rejected { background-color: #ffcccc; }
               .date { margin-top: 20px; font-style: italic; color: #666; }
               hr { border: 1px dashed #E73E01; margin: 10px 0; }
               h2 { color: #E73E01; text-align: center; }
@@ -190,52 +204,40 @@ const ExpediteurView = () => {
             </style>
           </head>
           <body>
-            <h2>Aperçu avant impression</h2>
+            <h2>Print Preview</h2>
             ${printContent
               .map(
                 (order) => `
-              <div class="order ${order.status === 'Ready' ? 'completed' : order.status === 'Missed' ? 'missed' : 'in-progress'}">
-                <p><strong>Commande:</strong> ${order.orderNumber}</p>
+              <div class="order ${order.status === 'Ready' ? 'completed' : order.status === 'Missed' ? 'missed' : order.status === 'rejected' ? 'rejected' : 'in-progress'}">
+                <p><strong>Order:</strong> ${order.orderNumber}</p>
                 <p><strong>Client:</strong> ${order.clientName || 'N/A'}</p>
                 <p><strong>Date:</strong> ${order.date}</p>
-                <p><strong>Heure:</strong> ${order.time}</p>
-                <p><strong>ID Unique:</strong> ${order.uniqueId}</p>
-                <p><strong>Articles:</strong></p>
+                <p><strong>Time:</strong> ${order.time}</p>
+                <p><strong>Unique ID:</strong> ${order.uniqueId}</p>
+                <p><strong>Items:</strong></p>
                 <ul>
                   ${order.items.map((item) => `<li>${item.name} x${item.quantity}</li>`).join('')}
                 </ul>
                 <p><strong>Total:</strong> ${order.totalPrice} EUR</p>
-                <p><strong>Statut:</strong> ${order.status}</p>
+                <p><strong>Status:</strong> ${order.status}</p>
               </div>
             `
               )
               .join('')}
-            <p class="date">Imprimé le: ${new Date().toLocaleString('fr-FR')}</p>
+            <p class="date">Printed on: ${new Date().toLocaleString('fr-FR')}</p>
           </body>
         </html>
       `;
       await Print.printAsync({ html });
-      Alert.alert('Succès', 'Commande(s) envoyée à l’imprimante');
+      Alert.alert('Success', 'Order(s) sent to printer');
     } catch (error) {
-      Alert.alert('Erreur', 'Échec de l’impression: ' + error.message);
+      Alert.alert('Error', 'Printing failed: ' + error.message);
     }
     setPrintPreviewVisible(false);
   };
 
-  const totalPages = Math.ceil(filteredOrders.length / ordersPerPage);
   const paginatedOrders = filteredOrders.slice((currentPage - 1) * ordersPerPage, currentPage * ordersPerPage);
-
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
+  const totalPages = Math.ceil(filteredOrders.length / ordersPerPage);
 
   const numColumns = Math.min(Math.max(Math.floor((width - 40) / ticketSize), 1), 5);
 
@@ -252,7 +254,7 @@ const ExpediteurView = () => {
         style={[
           kdsStyles.ticketContainer,
           item.status === 'Ready' && { backgroundColor: '#d4edda' },
-          item.status === 'Missed' && { backgroundColor: '#f8d7da' },
+          (item.status === 'Missed' || item.status === 'rejected') && { backgroundColor: '#f8d7da' },
           { opacity: fadeAnim },
         ]}
       >
@@ -278,7 +280,7 @@ const ExpediteurView = () => {
                 setModalVisible(true);
               }}
             >
-              <Text style={kdsStyles.actionButtonText}>Détails</Text>
+              <Text style={kdsStyles.actionButtonText}>Details</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -295,18 +297,18 @@ const ExpediteurView = () => {
     >
       <View style={modalStyles.modalContainer}>
         <View style={modalStyles.modalContent}>
-          <Text style={modalStyles.modalTitle}>Aperçu avant impression</Text>
+          <Text style={modalStyles.modalTitle}>Print Preview</Text>
           <Text style={modalStyles.modalText}>
-            {printContent.length} commande(s) à imprimer
+            {printContent.length} order(s) to print
           </Text>
           <ScrollView>
             {printContent.map((order) => (
               <View key={order.id}>
-                <Text style={modalStyles.modalText}>Commande {order.orderNumber}</Text>
+                <Text style={modalStyles.modalText}>Order {order.orderNumber}</Text>
                 <Text style={modalStyles.modalText}>Client: {order.clientName || 'N/A'}</Text>
                 <Text style={modalStyles.modalText}>Date: {order.date}</Text>
-                <Text style={modalStyles.modalText}>Heure: {order.time}</Text>
-                <Text style={modalStyles.modalText}>ID Unique: {order.uniqueId}</Text>
+                <Text style={modalStyles.modalText}>Time: {order.time}</Text>
+                <Text style={modalStyles.modalText}>Unique ID: {order.uniqueId}</Text>
                 <FlatList
                   data={order.items}
                   renderItem={({ item }) => (
@@ -317,7 +319,7 @@ const ExpediteurView = () => {
                   keyExtractor={(item, index) => index.toString()}
                 />
                 <Text style={modalStyles.modalText}>Total: {order.totalPrice} EUR</Text>
-                <Text style={modalStyles.modalText}>Statut: {order.status}</Text>
+                <Text style={modalStyles.modalText}>Status: {order.status}</Text>
               </View>
             ))}
           </ScrollView>
@@ -326,10 +328,10 @@ const ExpediteurView = () => {
               style={[modalStyles.quitButton, { backgroundColor: '#FF0000' }]}
               onPress={() => setPrintPreviewVisible(false)}
             >
-              <Text style={modalStyles.quitButtonText}>Annuler</Text>
+              <Text style={modalStyles.quitButtonText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity style={modalStyles.acceptButton} onPress={handlePrint}>
-              <Text style={modalStyles.acceptButtonText}>Imprimer</Text>
+              <Text style={modalStyles.acceptButtonText}>Print</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -347,7 +349,7 @@ const ExpediteurView = () => {
       >
         <View style={modalStyles.modalContainer}>
           <View style={modalStyles.modalContent}>
-            <Text style={modalStyles.modalTitle}>Détails de la commande</Text>
+            <Text style={modalStyles.modalTitle}>Order Details</Text>
             <FlatList
               data={selectedOrder.items}
               renderItem={({ item }) => (
@@ -361,19 +363,47 @@ const ExpediteurView = () => {
               style={modalStyles.quitButton}
               onPress={() => setModalVisible(false)}
             >
-              <Text style={modalStyles.quitButtonText}>Quitter</Text>
+              <Text style={modalStyles.quitButtonText}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
+  );
+
+  const Pagination = ({ currentPage, totalPages, onPageChange }) => {
+    return (
+      <View style={staffStyles.paginationContainer}>
+        <TouchableOpacity
+          style={[
+            staffStyles.paginationButton,
+            currentPage === 1 && staffStyles.paginationButtonDisabled,
+          ]}
+          onPress={() => onPageChange(currentPage - 1)}
+          disabled={currentPage === 1}
+        >
+          <Text style={staffStyles.paginationButtonText}>Previous</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            staffStyles.paginationButton,
+            currentPage === totalPages && staffStyles.paginationButtonDisabled,
+          ]}
+          onPress={() => onPageChange(currentPage + 1)}
+          disabled={currentPage === totalPages}
+        >
+          <Text style={staffStyles.paginationButtonText}>Next</Text>
+        </TouchableOpacity>
+      </View>
     );
+  };
 
   return (
     <View style={{ flex: 1, flexDirection: 'row' }}>
       <Sidebar options={options} />
       <View style={{ flex: 1, padding: 20 }}>
         <Animated.View style={[localStyles.headerContainer, { opacity: fadeAnim }]}>
-          <Text style={localStyles.header}>Vue des Expéditeurs</Text>
+          <Text style={localStyles.header}>Order View</Text>
         </Animated.View>
         <View style={staffStyles.filterContainer}>
           {['', 'Pending', 'Ready', 'Missed'].map((status) => (
@@ -382,14 +412,20 @@ const ExpediteurView = () => {
               style={[
                 staffStyles.filterButton,
                 filteredStatus === status && staffStyles.filterButtonActive,
+                filteredStatus === status && {
+                  backgroundColor: status === 'Ready' ? '#d4edda' : status === 'Missed' ? '#f8d7da' : '#E73E01',
+                },
               ]}
               onPress={() => setFilteredStatus(status)}
-              accessibilityLabel={`Filtrer par ${status || 'ALL'}`}
+              accessibilityLabel={`Filter by ${status || 'ALL'}`}
             >
               <Text
                 style={[
                   staffStyles.filterText,
                   filteredStatus === status && staffStyles.filterTextActive,
+                  filteredStatus === status && {
+                    color: status === 'Ready' ? '#333' : status === 'Missed' ? '#333' : '#FFFFFF',
+                  },
                 ]}
               >
                 {status || 'ALL'}
@@ -405,36 +441,16 @@ const ExpediteurView = () => {
               keyExtractor={(item) => item.id}
               numColumns={numColumns}
               columnWrapperStyle={kdsStyles.columnWrapper}
-              ListEmptyComponent={<Text style={staffStyles.emptyText}>Aucune commande trouvée</Text>}
+              ListEmptyComponent={<Text style={staffStyles.emptyText}>No orders found</Text>}
             />
-            <View style={staffStyles.paginationContainer}>
-              <TouchableOpacity
-                style={[
-                  staffStyles.paginationButton,
-                  currentPage === 1 && staffStyles.paginationButtonDisabled,
-                ]}
-                onPress={handlePreviousPage}
-                disabled={currentPage === 1}
-              >
-                <Text style={staffStyles.paginationButtonText}>Précédent</Text>
-              </TouchableOpacity>
-              <Text style={staffStyles.pageText}>
-                Page {currentPage} sur {totalPages || 1}
-              </Text>
-              <TouchableOpacity
-                style={[
-                  staffStyles.paginationButton,
-                  currentPage >= totalPages && staffStyles.paginationButtonDisabled,
-                ]}
-                onPress={handleNextPage}
-                disabled={currentPage >= totalPages}
-              >
-                <Text style={staffStyles.paginationButtonText}>Suivant</Text>
-              </TouchableOpacity>
-            </View>
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages || 1}
+              onPageChange={setCurrentPage}
+            />
           </>
         ) : (
-          <Text style={staffStyles.emptyText}>Aucune commande</Text>
+          <Text style={staffStyles.emptyText}>No orders</Text>
         )}
         {renderPrintPreviewModal()}
         {renderModal()}
@@ -455,6 +471,9 @@ const localStyles = StyleSheet.create({
     color: '#E73E01',
     textAlign: 'center',
     letterSpacing: 1,
+    padding: 10,
+    backgroundColor: '#fff',
+    borderRadius: 20,
   },
 });
 
@@ -614,7 +633,8 @@ const staffStyles = StyleSheet.create({
     marginBottom: 10,
   },
   filterButtonActive: {
-    backgroundColor: '#E73E01',
+    borderWidth: 2,
+    borderColor: '#E73E01',
   },
   filterText: {
     fontSize: 12 * fontScale,
@@ -622,7 +642,6 @@ const staffStyles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   filterTextActive: {
-    color: '#FFFFFF',
     fontWeight: '600',
   },
   emptyText: {
@@ -636,25 +655,38 @@ const staffStyles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginTop: 20,
+    backgroundColor: '#f5f5f5',
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    borderRadius: 30,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 5,
   },
   paginationButton: {
     backgroundColor: '#E73E01',
+    borderRadius: 20,
     paddingVertical: 8,
     paddingHorizontal: 15,
-    borderRadius: 20,
-    marginHorizontal: 10,
+    marginHorizontal: 20,
+    minWidth: 80,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 3,
   },
   paginationButtonDisabled: {
     backgroundColor: '#ccc',
+    shadowOpacity: 0,
   },
   paginationButtonText: {
     color: '#FFFFFF',
     fontSize: 12 * fontScale,
     fontWeight: '600',
-  },
-  pageText: {
-    fontSize: 12 * fontScale,
-    color: '#333',
   },
 });
 

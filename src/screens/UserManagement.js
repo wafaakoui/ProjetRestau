@@ -14,15 +14,18 @@ import {
 } from 'react-native';
 import { FontAwesome5 } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import axios from 'axios';
 import Sidebar from '../components/Sidebar';
 
-const API_URL = 'http://localhost:3000'; // Remplacez par process.env.API_URL avec react-native-dotenv en production
+// Backend API URL (adjust for your environment)
+const API_URL = 'http://localhost:3000'; // Use 'http://10.0.2.2:3000' for Android emulator if needed
 
 const UserManagement = () => {
   const navigation = useNavigation();
   const route = useRoute();
   const [users, setUsers] = useState([]);
-  const [newUserName, setNewUserName] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserRole, setNewUserRole] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [editingUser, setEditingUser] = useState(null);
@@ -33,45 +36,44 @@ const UserManagement = () => {
   const [fadeAnim] = useState(new Animated.Value(0));
   const [modalAnim] = useState(new Animated.Value(0));
 
+  // Sidebar navigation options
   const options = [
     { title: 'Users', icon: 'users', screen: 'UserManagement' },
-    { title: 'Station', icon: 'tasks', screen: 'CategoryAssignment' },
+    { title: 'Station', icon: 'tasks', screen: 'Station' },
     { title: 'Menu', icon: 'utensils', screen: 'MenuManagement' },
     { title: 'Order', icon: 'list', screen: 'OrderView' },
     { title: 'Logout', icon: 'sign-out-alt', screen: 'Login' },
   ];
-
   const pageTitle = route.params?.pageTitle || 'Gérer les Utilisateurs';
 
-  // Fetch users from the backend
-  useEffect(() => {
-    const fetchUsers = async () => {
-      setIsLoading(true);
-      try {
-        const response = await fetch(`${API_URL}/usermanager`);
-        const data = await response.json();
-        if (response.ok) {
-          setUsers(data);
-        } else {
-          console.error('Error fetching users:', data.error);
-          Alert.alert('Erreur', data.error || 'Échec de la récupération des utilisateurs.');
-        }
-      } catch (error) {
-        console.error('Error fetching users:', error);
-        Alert.alert('Erreur', 'Impossible de se connecter au serveur.');
-      } finally {
-        setIsLoading(false);
+  // Retrieve JWT token from AsyncStorage
+  const getToken = async () => {
+    try {
+      const token = await AsyncStorage.getItem('userToken');
+      if (!token) {
+        Alert.alert('Erreur', 'Aucun token trouvé. Veuillez vous reconnecter.');
+        navigation.navigate('Login');
+        return null;
       }
-    };
-    fetchUsers();
+      return token;
+    } catch (error) {
+      console.error('Erreur lors de la récupération du token:', error);
+      Alert.alert('Erreur', 'Impossible de récupérer le token.');
+      navigation.navigate('Login');
+      return null;
+    }
+  };
 
+  // Fade-in animation for page load
+  useEffect(() => {
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 1000,
       useNativeDriver: true,
     }).start();
-  }, [fadeAnim]);
+  }, []);
 
+  // Modal animation for delete confirmation
   const animateModal = (visible) => {
     Animated.spring(modalAnim, {
       toValue: visible ? 1 : 0,
@@ -88,108 +90,162 @@ const UserManagement = () => {
 
   const validRoles = ['Staff', 'Expéditeur'];
 
-  const handleAddOrUpdateUser = async () => {
-    if (!newUserName || !newUserPassword || !newUserRole) {
-      Alert.alert('Erreur', 'Veuillez entrer un nom, un rôle et un mot de passe.');
-      return;
-    }
-    if (!validRoles.includes(newUserRole)) {
-      Alert.alert('Erreur', 'Le rôle doit être Staff ou Expéditeur.');
-      return;
-    }
-
+  // Fetch users from the backend
+  const fetchUsers = async () => {
     setIsLoading(true);
     try {
-      let response;
-      if (editingUser) {
-        // Update user
-        response = await fetch(`${API_URL}/usermanager/update/${editingUser.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: newUserName, role: newUserRole, password: newUserPassword }),
-        });
-      } else {
-        // Add new user
-        response = await fetch(`${API_URL}/usermanager/add`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: newUserName, role: newUserRole, password: newUserPassword }),
-        });
-      }
+      const token = await getToken();
+      if (!token) return;
 
-      const data = await response.json();
-      if (response.ok) {
-        if (editingUser) {
-          setUsers(users.map((user) => (user.id === editingUser.id ? data : user)));
-          Alert.alert('Succès', 'Utilisateur modifié avec succès !');
-          setEditingUser(null);
-        } else {
-          setUsers([...users, data]);
-          Alert.alert('Succès', 'Utilisateur ajouté avec succès !');
-        }
-        setNewUserName('');
-        setNewUserRole('');
-        setNewUserPassword('');
-      } else {
-        Alert.alert('Erreur', data.error || 'Une erreur est survenue.');
-      }
+      const response = await axios.get(`${API_URL}/api/usermanager`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      setUsers(response.data);
     } catch (error) {
-      console.error('Error saving user:', error);
-      Alert.alert('Erreur', 'Échec de l’opération. Vérifiez votre connexion.');
+      console.error('Error fetching users:', error);
+      Alert.alert('Erreur', 'Impossible de charger les utilisateurs');
     } finally {
       setIsLoading(false);
     }
   };
 
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+
+  // Add or update a user
+  const handleAddOrUpdateUser = async () => {
+    if (!newUserEmail || !newUserPassword || !newUserRole) {
+      Alert.alert('Erreur', 'Veuillez entrer un email, un rôle et un mot de passe.');
+      return;
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(newUserEmail)) {
+      Alert.alert('Erreur', 'Veuillez entrer une adresse email valide.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const token = await getToken();
+      if (!token) return;
+
+      const payload = {
+        email: newUserEmail,
+        role: newUserRole,
+        password: newUserPassword,
+      };
+
+      let response;
+      if (editingUser) {
+        // Update existing user
+        response = await axios.put(
+          `${API_URL}/api/update/${editingUser.id}`,
+          payload,
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+      } else {
+        // Add new user
+        response = await axios.post(
+          `${API_URL}/api/usermanager/add`,
+          payload,
+          {
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+      }
+
+      await fetchUsers();
+      Alert.alert(
+        'Succès',
+        editingUser ? 'Utilisateur modifié avec succès !' : 'Utilisateur ajouté avec succès !'
+      );
+
+      // Reset form
+      setNewUserEmail('');
+      setNewUserRole('');
+      setNewUserPassword('');
+      setEditingUser(null);
+    } catch (error) {
+      console.error('Error:', error);
+      Alert.alert(
+        'Erreur',
+        error.response?.data?.error || 'Une erreur est survenue'
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Confirm user deletion
   const confirmDeleteUser = (id) => {
     setUserToDelete(id);
     setDeleteModalVisible(true);
     animateModal(true);
   };
 
+  // Delete a user
   const deleteUser = async () => {
-    if (userToDelete) {
-      setIsLoading(true);
-      try {
-        const response = await fetch(`${API_URL}/usermanager/delete/${userToDelete}`, {
-          method: 'DELETE',
-        });
-        const data = await response.json();
-        if (response.ok) {
-          setUsers(users.filter((user) => user.id !== userToDelete));
-          animateModal(false);
-          Alert.alert('Succès', 'Utilisateur supprimé avec succès !');
-        } else {
-          Alert.alert('Erreur', data.error || 'Échec de la suppression.');
-        }
-      } catch (error) {
-        console.error('Error deleting user:', error);
-        Alert.alert('Erreur', 'Échec de la suppression. Vérifiez votre connexion.');
-      } finally {
-        setIsLoading(false);
-      }
+    if (!userToDelete) return;
+
+    setIsLoading(true);
+    try {
+      const token = await getToken();
+      if (!token) return;
+
+      await axios.delete(`${API_URL}/api/delete/${userToDelete}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      setUsers(users.filter((user) => user.id !== userToDelete));
+      animateModal(false);
+      Alert.alert('Succès', 'Utilisateur supprimé avec succès !');
+    } catch (error) {
+      console.error('Erreur lors de la suppression de l\'utilisateur:', error);
+      const errorMessage = error.response?.data?.error || error.message;
+      Alert.alert('Erreur', `Échec de la suppression: ${errorMessage}`);
+    } finally {
+      setIsLoading(false);
     }
   };
 
+  // Close delete modal
   const closeDeleteModal = () => {
     animateModal(false);
   };
 
+  // Edit a user
   const editUser = (user) => {
-    setNewUserName(user.name);
+    setNewUserEmail(user.email);
     setNewUserRole(user.role);
-    setNewUserPassword(''); // Ne pas pré-remplir le mot de passe pour des raisons de sécurité
+    setNewUserPassword('');
     setEditingUser(user);
   };
 
+  // Select user role
   const selectRole = (role) => {
     setNewUserRole(role);
   };
 
+  // Render user list item
   const renderUserItem = ({ item }) => (
     <View style={styles.userItem}>
       <Text style={styles.userText} numberOfLines={1} ellipsizeMode="tail">
-        {item.name} - Rôle: {item.role}
+        {item.email} - Rôle: {item.role}
       </Text>
       <View style={styles.buttonContainer}>
         <TouchableOpacity onPress={() => editUser(item)} style={styles.button} disabled={isLoading}>
@@ -206,6 +262,7 @@ const UserManagement = () => {
     </View>
   );
 
+  // Render delete confirmation modal
   const renderDeleteModal = () => (
     <Modal transparent visible={deleteModalVisible} animationType="none">
       <View style={styles.modalOverlay}>
@@ -235,7 +292,7 @@ const UserManagement = () => {
             <FontAwesome5 name="trash-alt" size={40} color="#E73E01" style={styles.modalIcon} />
           </View>
           <Text style={styles.modalText}>
-            Êtes-vous sûr de vouloir supprimer "{users.find((user) => user.id === userToDelete)?.name}" ?
+            Êtes-vous sûr de vouloir supprimer "{users.find((user) => user.id === userToDelete)?.email || 'Utilisateur'}" ?
           </Text>
           <View style={styles.modalButtonContainer}>
             <TouchableOpacity
@@ -268,10 +325,12 @@ const UserManagement = () => {
         {isLoading && <ActivityIndicator size="large" color="#E73E01" style={styles.loader} />}
         <TextInput
           style={styles.input}
-          placeholder="Nom de l'utilisateur"
+          placeholder="Email de l'utilisateur"
           placeholderTextColor="#8B5A2B"
-          value={newUserName}
-          onChangeText={setNewUserName}
+          value={newUserEmail}
+          onChangeText={setNewUserEmail}
+          keyboardType="email-address"
+          autoCapitalize="none"
           editable={!isLoading}
         />
         <TextInput
@@ -314,242 +373,193 @@ const UserManagement = () => {
             {editingUser ? 'Modifier' : 'Ajouter'} un utilisateur
           </Text>
         </TouchableOpacity>
-        <FlatList
-          data={users}
-          renderItem={renderUserItem}
-          keyExtractor={(item) => item.id.toString()}
-          style={styles.userList}
-        />
+        {users.length === 0 ? (
+          <Text style={styles.emptyListText}>Aucun utilisateur ajouté pour le moment.</Text>
+        ) : (
+          <FlatList
+            data={users}
+            renderItem={renderUserItem}
+            keyExtractor={(item) => item.id.toString()}
+            style={styles.userList}
+          />
+        )}
         {renderDeleteModal()}
       </View>
     </View>
   );
 };
 
-const { width, height } = Dimensions.get('window');
-const fontScale = width > 375 ? 1 : 0.9;
-
+// Styles for the component
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F5F5F5',
   },
   content: {
     flex: 1,
     padding: 20,
   },
   headerContainer: {
-    marginBottom: 30,
-    justifyContent: 'center',
-    alignItems: 'center',
+    marginBottom: 20,
   },
   header: {
-    fontSize: 28 * fontScale,
-    fontWeight: '700',
+    fontSize: 24,
+    fontWeight: 'bold',
     color: '#E73E01',
-    textAlign: 'center',
-    letterSpacing: 1,
   },
   input: {
-    height: 50,
-    borderColor: '#E73E01',
-    borderWidth: 1,
+    backgroundColor: '#FFFFFF',
     borderRadius: 8,
-    marginBottom: 20,
-    paddingHorizontal: 15,
-    backgroundColor: '#FFFFFF',
-    fontSize: 16 * fontScale,
-    color: '#000000',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  addButton: {
-    backgroundColor: '#E73E01',
-    paddingVertical: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-    elevation: 4,
-    marginBottom: 20,
-  },
-  disabledButton: {
-    backgroundColor: '#cccccc',
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: '#FFFFFF',
-    fontSize: 16 * fontScale,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  userList: {
-    marginBottom: 20,
-  },
-  userItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 15,
-    paddingHorizontal: 20,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    marginBottom: 12,
-    elevation: 4,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    padding: 10,
+    marginBottom: 15,
+    fontSize: 16,
     borderWidth: 1,
-    borderColor: '#E73E01',
-    minHeight: 60,
-  },
-  userText: {
-    fontSize: 18 * fontScale,
-    color: '#000000',
-    fontWeight: '600',
-    maxWidth: '70%',
-  },
-  buttonContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minWidth: 60,
-  },
-  button: {
-    marginHorizontal: 8,
-    padding: 5,
+    borderColor: '#E0E0E0',
   },
   roleContainer: {
-    marginBottom: 20,
+    marginBottom: 15,
   },
   roleLabel: {
-    fontSize: 16 * fontScale,
+    fontSize: 16,
     fontWeight: '600',
-    color: '#8B5A2B',
+    color: '#333',
     marginBottom: 10,
   },
   roleButtons: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 10,
   },
   roleButton: {
     flex: 1,
-    paddingVertical: 12,
+    padding: 10,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#E73E01',
+    borderColor: '#E0E0E0',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    elevation: 2,
+    marginHorizontal: 5,
   },
   roleButtonSelected: {
     backgroundColor: '#E73E01',
+    borderColor: '#E73E01',
   },
   roleButtonText: {
-    fontSize: 14 * fontScale,
-    fontWeight: '600',
-    color: '#E73E01',
+    fontSize: 16,
+    color: '#333',
   },
   roleButtonTextSelected: {
     color: '#FFFFFF',
   },
+  addButton: {
+    backgroundColor: '#E73E01',
+    padding: 15,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  disabledButton: {
+    backgroundColor: '#B0B0B0',
+  },
+  buttonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  userList: {
+    flex: 1,
+  },
+  userItem: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  userText: {
+    flex: 1,
+    fontSize: 16,
+    color: '#333',
+  },
+  buttonContainer: {
+    flexDirection: 'row',
+  },
+  button: {
+    padding: 10,
+  },
   modalOverlay: {
     flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.7)',
   },
   modalContent: {
-    backgroundColor: '#FFFFFF',
-    padding: 25,
+    backgroundColor: '#2E2E2E',
     borderRadius: 15,
-    width: width * 0.85,
-    maxHeight: height * 0.5,
-    elevation: 8,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    borderWidth: 2,
-    borderColor: '#E73E01',
+    padding: 20,
+    width: Dimensions.get('window').width * 0.85,
+    alignItems: 'center',
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#E73E01',
-    paddingVertical: 15,
-    paddingHorizontal: 20,
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
-    margin: -25,
-    marginBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#8B5A2B',
+    width: '100%',
+    marginBottom: 10,
   },
   modalTitle: {
-    fontSize: 22 * fontScale,
-    fontWeight: '700',
+    fontSize: 20,
+    fontWeight: 'bold',
     color: '#FFFFFF',
-    letterSpacing: 0.5,
   },
   modalIconContainer: {
-    alignItems: 'center',
-    marginBottom: 15,
+    marginVertical: 20,
   },
   modalIcon: {
-    backgroundColor: 'rgba(231, 62, 1, 0.1)',
-    padding: 15,
-    borderRadius: 50,
+    opacity: 0.9,
   },
   modalText: {
-    fontSize: 16 * fontScale,
-    fontWeight: '500',
-    color: '#333333',
+    fontSize: 16,
+    color: '#FFFFFF',
     textAlign: 'center',
-    marginBottom: 25,
-    lineHeight: 22,
+    marginBottom: 20,
   },
   modalButtonContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 15,
+    width: '100%',
   },
   modalCancelButton: {
-    backgroundColor: '#8B5A2B',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
     flex: 1,
-    elevation: 4,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
+    backgroundColor: '#666',
+    padding: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginRight: 5,
   },
   modalDeleteButton: {
-    backgroundColor: '#E73E01',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
     flex: 1,
-    elevation: 4,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
+    backgroundColor: '#E73E01',
+    padding: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginLeft: 5,
   },
   modalButtonText: {
     color: '#FFFFFF',
-    fontSize: 16 * fontScale,
-    fontWeight: '700',
-    letterSpacing: 0.5,
+    fontSize: 16,
+    fontWeight: '600',
   },
   loader: {
     marginVertical: 20,
+  },
+  emptyListText: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 20,
   },
 });
 
