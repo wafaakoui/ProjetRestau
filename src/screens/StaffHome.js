@@ -10,6 +10,8 @@ import {
   Dimensions,
   Modal,
   ScrollView,
+  TextInput,
+  Picker,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -18,8 +20,8 @@ import Sidebar from '../components/Sidebar';
 
 const { width } = Dimensions.get('window');
 const fontScale = width > 375 ? 1 : 0.9;
-const ticketSize = 240;
-const ticketHeight = 200; // Réduit pour un affichage plus compact
+const ticketSize = 260;
+const ticketHeight = 260; // Increased height to accommodate more details
 
 const StaffHome = () => {
   const navigation = useNavigation();
@@ -35,9 +37,16 @@ const StaffHome = () => {
   const [fadeAnim] = useState(new Animated.Value(0));
   const [socket, setSocket] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
+  const [addOrderModalVisible, setAddOrderModalVisible] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const ordersPerPage = 10;
   const serverUrl = 'https://server.eatorder.fr:8000';
+  const statusFilters = ['All', 'Pending', 'Ready', 'Missed'];
+
+  const [newOrderItems, setNewOrderItems] = useState([{ name: '', quantity: 1, station: 'Pizza' }]);
+  const [newOrderStatus, setNewOrderStatus] = useState('Pending');
+  const [newOrderClientName, setNewOrderClientName] = useState('');
+  const [newOrderTotalPrice, setNewOrderTotalPrice] = useState('');
 
   const options = [
     { title: 'Commandes', icon: 'list', screen: 'StaffHome' },
@@ -51,8 +60,6 @@ const StaffHome = () => {
       },
     },
   ];
-
-  const statusFilters = ['All', 'Pending', 'Ready', 'Missed'];
 
   const formatTime = (dateString) => {
     return new Date(dateString).toLocaleTimeString('fr-FR', {
@@ -80,26 +87,24 @@ const StaffHome = () => {
     return statusMap[status] || status || 'Unknown';
   };
 
-  const fetchStations = async () => {
-    try {
-      const token = await AsyncStorage.getItem('userToken');
-      if (!token) throw new Error('No authentication token found');
-
-      const response = await fetch(`${serverUrl}/getstations/${storeId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await response.json();
-      if (response.ok && data.stations) {
-        setStations(['All', ...data.stations.map((station) => station.name)]);
-      } else {
-        throw new Error(data.message || 'Failed to fetch stations');
-      }
-    } catch (error) {
-      console.error('Error fetching stations:', error);
-      Alert.alert('Erreur', 'Impossible de charger les stations.');
-      setStations(['All']);
-    }
-  };
+  useEffect(() => {
+    const stationData = [
+      { name: 'Salade' },
+      { name: 'Pizza' },
+      { name: 'Burger' },
+      { name: 'Riz' },
+      { name: 'Pates' },
+      { name: 'Japonais' },
+      { name: 'Thailande' },
+      { name: 'Indien' },
+      { name: 'Crepe / Gaufre' },
+      { name: 'Tex' },
+      { name: 'Boissons' },
+      { name: 'Test' },
+    ];
+    const stationNames = stationData.map((station) => station.name);
+    setStations(['All', ...stationNames.map((name) => `Chef de ${name}`)]);
+  }, []);
 
   const updateOrderStatus = async (orderId, newStatus) => {
     try {
@@ -181,8 +186,9 @@ const StaffHome = () => {
     let filtered = [...orders];
 
     if (currentStation !== 'All') {
+      const stationName = currentStation.replace('Chef de ', '');
       filtered = filtered.filter((order) =>
-        order.items.some((item) => item.station === currentStation)
+        order.items.some((item) => item.station === stationName)
       );
     }
 
@@ -208,7 +214,7 @@ const StaffHome = () => {
           return;
         }
 
-        await Promise.all([fetchOrders(currentPage), fetchStations()]);
+        await fetchOrders(currentPage);
 
         const socketInstance = io(serverUrl, {
           auth: { token },
@@ -233,7 +239,7 @@ const StaffHome = () => {
     setup();
     Animated.timing(fadeAnim, {
       toValue: 1,
-      duration: 500,
+      duration: 600,
       useNativeDriver: true,
     }).start();
 
@@ -242,12 +248,76 @@ const StaffHome = () => {
     };
   }, [currentPage, chefId, fetchOrders, serverUrl]);
 
+  const addNewOrder = async () => {
+    try {
+      const token = await AsyncStorage.getItem('userToken');
+      if (!token) throw new Error('No authentication token found');
+
+      if (!newOrderClientName) {
+        Alert.alert('Erreur', 'Veuillez entrer le nom du client.');
+        return;
+      }
+      if (!newOrderTotalPrice || isNaN(newOrderTotalPrice)) {
+        Alert.alert('Erreur', 'Veuillez entrer un prix total valide.');
+        return;
+      }
+      if (newOrderItems.length === 0 || newOrderItems.some(item => !item.name)) {
+        Alert.alert('Erreur', 'Veuillez ajouter au moins un article valide.');
+        return;
+      }
+
+      const newOrder = {
+        storeId: storeId,
+        client_first_name: newOrderClientName.split(' ')[0] || newOrderClientName,
+        client_last_name: newOrderClientName.split(' ')[1] || '',
+        price_total: parseFloat(newOrderTotalPrice),
+        status: newOrderStatus.toLowerCase(),
+        items: newOrderItems.map(item => ({
+          name: item.name,
+          quantity: item.quantity,
+          station: item.station,
+        })),
+        createdAt: new Date('2025-05-17T12:54:00+02:00').toISOString(), // Updated to 12:54 PM CET
+      };
+
+      const response = await fetch(`${serverUrl}/owner/orders`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(newOrder),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.message || 'Failed to create order');
+      }
+
+      await fetchOrders(currentPage);
+      setAddOrderModalVisible(false);
+      setNewOrderItems([{ name: '', quantity: 1, station: 'Pizza' }]);
+      setNewOrderClientName('');
+      setNewOrderTotalPrice('');
+      setNewOrderStatus('Pending');
+      Alert.alert('Succès', 'Commande ajoutée avec succès.');
+    } catch (error) {
+      console.error('Error adding new order:', error);
+      Alert.alert('Erreur', 'Impossible d’ajouter la commande.');
+    }
+  };
+
   const renderOrderItem = ({ item }) => {
     const statusColors = {
-      Ready: { bg: '#d4edda', border: '#28a745' },
-      Missed: { bg: '#f8d7da', border: '#dc3545' },
-      Pending: { bg: '#fff3cd', border: '#E73E01' },
+      Ready: { bg: '#e6f4ea', border: '#34c759' },
+      Missed: { bg: '#fee2e2', border: '#ff3b30' },
+      Pending: { bg: '#fefce8', border: '#f59e0b' },
     };
+
+    const stationName = currentStation !== 'All' ? currentStation.replace('Chef de ', '') : null;
+    const displayItems = stationName
+      ? item.items.filter((i) => i.station === stationName)
+      : item.items;
 
     return (
       <Animated.View
@@ -261,10 +331,13 @@ const StaffHome = () => {
         ]}
       >
         <View style={styles.ticketContent}>
+          <Text style={styles.orderTitle}>Commande: {item.orderNumber}</Text>
           <Text style={styles.orderDetails}>
-            Articles: {item.items.map((i) => `${i.name} x${i.quantity}`).join(', ')}
+            Articles: {displayItems.map((i) => `${i.name} x${i.quantity}`).join(', ')}
           </Text>
           <Text style={styles.orderDetails}>Statut: {item.status}</Text>
+          <Text style={styles.orderDetails}>Date: {item.date}</Text>
+          <Text style={styles.orderDetails}>Heure: {item.time}</Text>
           <View style={styles.actionRow}>
             <TouchableOpacity
               style={styles.actionButton}
@@ -278,13 +351,13 @@ const StaffHome = () => {
             {item.status === 'Pending' && (
               <View style={styles.statusButtons}>
                 <TouchableOpacity
-                  style={[styles.statusButton, { backgroundColor: '#28a745' }]}
+                  style={[styles.statusButton, { backgroundColor: '#34c759' }]}
                   onPress={() => updateOrderStatus(item.id, 'accepted')}
                 >
                   <Text style={styles.statusButtonText}>Prêt</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.statusButton, { backgroundColor: '#dc3545' }]}
+                  style={[styles.statusButton, { backgroundColor: '#ff3b30' }]}
                   onPress={() => updateOrderStatus(item.id, 'missed')}
                 >
                   <Text style={styles.statusButtonText}>Manqué</Text>
@@ -338,6 +411,127 @@ const StaffHome = () => {
       </Modal>
     );
 
+  const renderAddOrderModal = () => (
+    <Modal
+      visible={addOrderModalVisible}
+      onRequestClose={() => setAddOrderModalVisible(false)}
+      transparent={true}
+      animationType="slide"
+    >
+      <View style={styles.modalContainer}>
+        <View style={styles.modalContent}>
+          <Text style={styles.modalTitle}>Ajouter une Nouvelle Commande</Text>
+          <ScrollView>
+            <Text style={styles.modalText}>Nom du Client:</Text>
+            <TextInput
+              style={styles.input}
+              value={newOrderClientName}
+              onChangeText={setNewOrderClientName}
+              placeholder="Entrez le nom du client"
+            />
+
+            <Text style={styles.modalText}>Prix Total (EUR):</Text>
+            <TextInput
+              style={styles.input}
+              value={newOrderTotalPrice}
+              onChangeText={setNewOrderTotalPrice}
+              placeholder="Entrez le prix total"
+              keyboardType="numeric"
+            />
+
+            <Text style={styles.modalText}>Articles:</Text>
+            {newOrderItems.map((item, index) => (
+              <View key={index} style={styles.itemContainer}>
+                <TextInput
+                  style={[styles.input, styles.itemInput]}
+                  value={item.name}
+                  onChangeText={(text) => {
+                    const updatedItems = [...newOrderItems];
+                    updatedItems[index].name = text;
+                    setNewOrderItems(updatedItems);
+                  }}
+                  placeholder="Nom de l'article"
+                />
+                <TextInput
+                  style={[styles.input, styles.quantityInput]}
+                  value={item.quantity.toString()}
+                  onChangeText={(text) => {
+                    const updatedItems = [...newOrderItems];
+                    updatedItems[index].quantity = parseInt(text) || 1;
+                    setNewOrderItems(updatedItems);
+                  }}
+                  placeholder="Quantité"
+                  keyboardType="numeric"
+                />
+                <Picker
+                  selectedValue={item.station}
+                  style={styles.picker}
+                  onValueChange={(value) => {
+                    const updatedItems = [...newOrderItems];
+                    updatedItems[index].station = value;
+                    setNewOrderItems(updatedItems);
+                  }}
+                >
+                  {stations.filter(s => s !== 'All').map((station) => (
+                    <Picker.Item
+                      key={station}
+                      label={station.replace('Chef de ', '')}
+                      value={station.replace('Chef de ', '')}
+                    />
+                  ))}
+                </Picker>
+                <TouchableOpacity
+                  style={styles.removeItemButton}
+                  onPress={() => {
+                    if (newOrderItems.length > 1) {
+                      const updatedItems = newOrderItems.filter((_, i) => i !== index);
+                      setNewOrderItems(updatedItems);
+                    }
+                  }}
+                >
+                  <Text style={styles.removeItemButtonText}>Supprimer</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity
+              style={styles.addItemButton}
+              onPress={() => setNewOrderItems([...newOrderItems, { name: '', quantity: 1, station: 'Pizza' }])}
+            >
+              <Text style={styles.addItemButtonText}>Ajouter un Article</Text>
+            </TouchableOpacity>
+
+            <Text style={styles.modalText}>Statut:</Text>
+            <Picker
+              selectedValue={newOrderStatus}
+              style={styles.picker}
+              onValueChange={(itemValue) => setNewOrderStatus(itemValue)}
+            >
+              <Picker.Item label="Pending" value="Pending" />
+              <Picker.Item label="Ready" value="Ready" />
+              <Picker.Item label="Missed" value="Missed" />
+            </Picker>
+
+            <Text style={styles.modalText}>Date et Heure: 17/05/2025 12:54</Text>
+          </ScrollView>
+          <View style={styles.modalButtonContainer}>
+            <TouchableOpacity
+              style={styles.submitButton}
+              onPress={addNewOrder}
+            >
+              <Text style={styles.submitButtonText}>Ajouter</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.quitButton}
+              onPress={() => setAddOrderModalVisible(false)}
+            >
+              <Text style={styles.quitButtonText}>Annuler</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
   const Pagination = ({ currentPage, totalPages, onPageChange }) => (
     <View style={styles.paginationContainer}>
       <TouchableOpacity
@@ -351,7 +545,7 @@ const StaffHome = () => {
         <Text style={styles.paginationButtonText}>Précédent</Text>
       </TouchableOpacity>
       <Text style={styles.pageIndicator}>
-        Page {currentPage} sur {totalPages}
+        Page {currentPage} sur {totalPages || 1}
       </Text>
       <TouchableOpacity
         style={[
@@ -363,6 +557,62 @@ const StaffHome = () => {
       >
         <Text style={styles.paginationButtonText}>Suivant</Text>
       </TouchableOpacity>
+    </View>
+  );
+
+  const renderFilterMenu = () => (
+    <View style={styles.filterContainer}>
+      <View style={styles.stationFilter}>
+        {stations.map((station) => (
+          <TouchableOpacity
+            key={station}
+            style={[
+              styles.stationButton,
+              currentStation === station && styles.stationButtonActive,
+            ]}
+            onPress={() => {
+              setCurrentStation(station);
+              setCurrentStatus('All');
+              setCurrentPage(1);
+            }}
+          >
+            <Text
+              style={[
+                styles.stationButtonText,
+                currentStation === station && styles.stationButtonTextActive,
+              ]}
+            >
+              {station}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      {currentStation !== 'All' && (
+        <View style={styles.statusFilter}>
+          {statusFilters.map((status) => (
+            <TouchableOpacity
+              key={`${currentStation}-${status}`}
+              style={[
+                styles.statusButtonFilter,
+                currentStatus === status && styles.statusButtonFilterActive,
+              ]}
+              onPress={() => {
+                setCurrentStatus(status);
+                setCurrentPage(1);
+              }}
+            >
+              <Text
+                style={[
+                  styles.statusButtonTextFilter,
+                  currentStatus === status && styles.statusButtonTextFilterActive,
+                ]}
+              >
+                {status === 'All' ? 'Tous' : status}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
     </View>
   );
 
@@ -381,57 +631,14 @@ const StaffHome = () => {
           <Text style={styles.header}>Tableau de Bord du Personnel</Text>
         </Animated.View>
 
-        <View style={styles.filterContainer}>
-          <View style={styles.stationFilter}>
-            {stations.map((station) => (
-              <TouchableOpacity
-                key={station}
-                style={[
-                  styles.stationButton,
-                  currentStation === station && styles.stationButtonActive,
-                ]}
-                onPress={() => {
-                  setCurrentStation(station);
-                  setCurrentStatus('All'); // Réinitialiser le statut lors du changement de station
-                  setCurrentPage(1);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.stationButtonText,
-                    currentStation === station && styles.stationButtonTextActive,
-                  ]}
-                >
-                  {station === 'All' ? 'Toutes' : `Station ${station}`}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          <View style={styles.statusFilter}>
-            {statusFilters.map((status) => (
-              <TouchableOpacity
-                key={status}
-                style={[
-                  styles.statusButtonFilter,
-                  currentStatus === status && styles.statusButtonFilterActive,
-                ]}
-                onPress={() => {
-                  setCurrentStatus(status);
-                  setCurrentPage(1);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.statusButtonTextFilter,
-                    currentStatus === status && styles.statusButtonTextFilterActive,
-                  ]}
-                >
-                  {status === 'All' ? 'Tous' : status}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
+        <TouchableOpacity
+          style={styles.addOrderButton}
+          onPress={() => setAddOrderModalVisible(true)}
+        >
+          <Text style={styles.addOrderButtonText}>Ajouter une Commande</Text>
+        </TouchableOpacity>
+
+        {renderFilterMenu()}
 
         {filteredOrders.length > 0 ? (
           <>
@@ -453,6 +660,7 @@ const StaffHome = () => {
           <Text style={styles.emptyText}>Aucune commande disponible.</Text>
         )}
         {renderOrderDetailsModal()}
+        {renderAddOrderModal()}
       </View>
     </View>
   );
@@ -462,80 +670,105 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     flexDirection: 'row',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#f8fafc',
   },
   mainContent: {
     flex: 1,
-    padding: 20,
+    padding: 24,
   },
   headerContainer: {
-    marginBottom: 20,
+    marginBottom: 24,
     alignItems: 'center',
   },
   header: {
-    fontSize: 24 * fontScale,
+    fontSize: 28 * fontScale,
     fontWeight: '700',
     color: '#ffffff',
-    paddingVertical: 10,
-    paddingHorizontal: 20,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
     backgroundColor: '#E73E01',
-    borderRadius: 25,
+    borderRadius: 12,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  addOrderButton: {
+    backgroundColor: '#E73E01',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    alignSelf: 'center',
+    marginBottom: 24,
+  },
+  addOrderButtonText: {
+    color: '#ffffff',
+    fontSize: 16 * fontScale,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   filterContainer: {
-    marginBottom: 20,
+    marginBottom: 24,
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   stationFilter: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    marginBottom: 10,
     justifyContent: 'center',
+    marginBottom: 12,
+  },
+  stationButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    margin: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E73E01',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+  },
+  stationButtonActive: {
+    backgroundColor: '#E73E01',
+    borderColor: '#d32f2f',
+  },
+  stationButtonText: {
+    fontSize: 14 * fontScale,
+    color: '#E73E01',
+    fontWeight: '500',
+  },
+  stationButtonTextActive: {
+    color: '#ffffff',
   },
   statusFilter: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
   },
-  stationButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    margin: 5,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#E73E01',
-    backgroundColor: '#ffffff',
-  },
-  stationButtonActive: {
-    backgroundColor: '#E73E01',
-  },
-  stationButtonText: {
-    fontSize: 14 * fontScale,
-    color: '#E73E01',
-    fontWeight: '600',
-  },
-  stationButtonTextActive: {
-    color: '#ffffff',
-  },
   statusButtonFilter: {
     paddingVertical: 8,
     paddingHorizontal: 16,
-    margin: 5,
-    borderRadius: 20,
+    margin: 4,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: '#E73E01',
-    backgroundColor: '#ffffff',
+    backgroundColor: '#f1f5f9',
   },
   statusButtonFilterActive: {
     backgroundColor: '#E73E01',
+    borderColor: '#d32f2f',
   },
   statusButtonTextFilter: {
     fontSize: 14 * fontScale,
     color: '#E73E01',
-    fontWeight: '600',
+    fontWeight: '500',
     textTransform: 'uppercase',
   },
   statusButtonTextFilterActive: {
@@ -547,32 +780,39 @@ const styles = StyleSheet.create({
     margin: 8,
     backgroundColor: '#ffffff',
     borderRadius: 12,
-    padding: 12,
-    elevation: 5,
+    padding: 16,
+    elevation: 4,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.2,
     shadowRadius: 6,
-    borderWidth: 2,
-    borderColor: '#E73E01',
+    borderWidth: 1.5,
+    borderColor: '#e5e7eb',
   },
   ticketContent: {
     flex: 1,
     justifyContent: 'space-between',
   },
+  orderTitle: {
+    fontSize: 16 * fontScale,
+    fontWeight: '600',
+    color: '#1f2937',
+    marginBottom: 8,
+  },
   orderDetails: {
-    fontSize: 13 * fontScale,
-    color: '#333',
+    fontSize: 14 * fontScale,
+    color: '#1f2937',
     marginBottom: 6,
+    lineHeight: 20,
   },
   actionRow: {
     flexDirection: 'column',
     alignItems: 'flex-end',
-    marginTop: 10,
+    marginTop: 12,
   },
   actionButton: {
     backgroundColor: '#E73E01',
-    borderRadius: 12,
+    borderRadius: 10,
     paddingVertical: 10,
     paddingHorizontal: 20,
     width: '100%',
@@ -589,7 +829,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   statusButton: {
-    borderRadius: 12,
+    borderRadius: 8,
     paddingVertical: 8,
     paddingHorizontal: 16,
     marginLeft: 8,
@@ -599,7 +839,7 @@ const styles = StyleSheet.create({
   },
   statusButtonText: {
     color: '#ffffff',
-    fontSize: 12 * fontScale,
+    fontSize: 13 * fontScale,
     fontWeight: '600',
   },
   columnWrapper: {
@@ -607,31 +847,35 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 16 * fontScale,
-    color: '#666',
+    color: '#6b7280',
     textAlign: 'center',
-    marginVertical: 20,
+    marginVertical: 24,
   },
   paginationContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 24,
     backgroundColor: '#ffffff',
-    padding: 15,
+    padding: 16,
     borderRadius: 12,
-    elevation: 5,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
   paginationButton: {
     backgroundColor: '#E73E01',
-    borderRadius: 12,
+    borderRadius: 10,
     paddingVertical: 10,
-    paddingHorizontal: 15,
-    marginHorizontal: 10,
-    minWidth: 80,
+    paddingHorizontal: 16,
+    marginHorizontal: 12,
+    minWidth: 100,
     alignItems: 'center',
   },
   paginationButtonDisabled: {
-    backgroundColor: '#d1d1d1',
+    backgroundColor: '#d1d5db',
   },
   paginationButtonText: {
     color: '#ffffff',
@@ -640,52 +884,121 @@ const styles = StyleSheet.create({
   },
   pageIndicator: {
     fontSize: 14 * fontScale,
-    color: '#333',
+    color: '#1f2937',
     fontWeight: '600',
   },
   modalContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
   },
   modalContent: {
-    width: '80%',
+    width: '85%',
     maxHeight: '80%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 15,
-    padding: 20,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 24,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 5,
+    shadowRadius: 8,
+    elevation: 6,
   },
   modalTitle: {
-    fontSize: 20 * fontScale,
+    fontSize: 22 * fontScale,
     fontWeight: '700',
     color: '#E73E01',
-    marginBottom: 15,
+    marginBottom: 16,
     textAlign: 'center',
   },
   modalText: {
+    fontSize: 15 * fontScale,
+    color: '#1f2937',
+    marginBottom: 10,
+    lineHeight: 22,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 12,
     fontSize: 14 * fontScale,
-    color: '#333',
-    marginBottom: 8,
+    color: '#1f2937',
+  },
+  itemContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  itemInput: {
+    flex: 2,
+    marginRight: 8,
+  },
+  quantityInput: {
+    flex: 1,
+    marginRight: 8,
+  },
+  picker: {
+    flex: 1,
+    height: 50,
+    marginRight: 8,
+  },
+  removeItemButton: {
+    backgroundColor: '#ff3b30',
+    borderRadius: 8,
+    padding: 8,
+  },
+  removeItemButtonText: {
+    color: '#ffffff',
+    fontSize: 12 * fontScale,
+    fontWeight: '600',
+  },
+  addItemButton: {
+    backgroundColor: '#34c759',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  addItemButtonText: {
+    color: '#ffffff',
+    fontSize: 14 * fontScale,
+    fontWeight: '600',
+  },
+  modalButtonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 16,
+  },
+  submitButton: {
+    backgroundColor: '#34c759',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 8,
+  },
+  submitButtonText: {
+    fontSize: 15 * fontScale,
+    fontWeight: '600',
+    color: '#ffffff',
   },
   quitButton: {
     backgroundColor: '#E73E01',
-    paddingVertical: 10,
-    paddingHorizontal: 20,
     borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
     alignItems: 'center',
-    marginTop: 15,
-    elevation: 2,
+    flex: 1,
   },
   quitButtonText: {
-    fontSize: 14 * fontScale,
+    fontSize: 15 * fontScale,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: '#ffffff',
     letterSpacing: 0.5,
   },
 });
