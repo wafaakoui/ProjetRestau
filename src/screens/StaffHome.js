@@ -10,18 +10,17 @@ import {
   Dimensions,
   Modal,
   ScrollView,
-  TextInput,
-  Picker,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import io from 'socket.io-client';
+import Icon from 'react-native-vector-icons/MaterialIcons';
 import Sidebar from '../components/Sidebar';
 
 const { width } = Dimensions.get('window');
 const fontScale = width > 375 ? 1 : 0.9;
 const ticketSize = 260;
-const ticketHeight = 260; // Increased height to accommodate more details
+const ticketHeight = 260;
 
 const StaffHome = () => {
   const navigation = useNavigation();
@@ -37,16 +36,11 @@ const StaffHome = () => {
   const [fadeAnim] = useState(new Animated.Value(0));
   const [socket, setSocket] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
-  const [addOrderModalVisible, setAddOrderModalVisible] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [checkedItems, setCheckedItems] = useState({});
   const ordersPerPage = 10;
   const serverUrl = 'https://server.eatorder.fr:8000';
   const statusFilters = ['All', 'Pending', 'Ready', 'Missed'];
-
-  const [newOrderItems, setNewOrderItems] = useState([{ name: '', quantity: 1, station: 'Pizza' }]);
-  const [newOrderStatus, setNewOrderStatus] = useState('Pending');
-  const [newOrderClientName, setNewOrderClientName] = useState('');
-  const [newOrderTotalPrice, setNewOrderTotalPrice] = useState('');
 
   const options = [
     { title: 'Commandes', icon: 'list', screen: 'StaffHome' },
@@ -81,10 +75,11 @@ const StaffHome = () => {
       pending: 'Pending',
       created: 'Pending',
       accepted: 'Ready',
+      ready: 'Ready',
       missed: 'Missed',
       rejected: 'Missed',
     };
-    return statusMap[status] || status || 'Unknown';
+    return statusMap[status?.toLowerCase()] || status || 'Unknown';
   };
 
   useEffect(() => {
@@ -248,62 +243,25 @@ const StaffHome = () => {
     };
   }, [currentPage, chefId, fetchOrders, serverUrl]);
 
-  const addNewOrder = async () => {
+  const handlePrintOrder = (order) => {
+    Alert.alert('Impression', `Impression de la commande ${order.orderNumber}...`);
+    console.log('Printing order:', {
+      orderNumber: order.orderNumber,
+      clientName: order.clientName,
+      items: order.items,
+      totalPrice: order.totalPrice,
+      status: order.status,
+    });
+  };
+
+  const handleValidateOrder = async (orderId) => {
     try {
-      const token = await AsyncStorage.getItem('userToken');
-      if (!token) throw new Error('No authentication token found');
-
-      if (!newOrderClientName) {
-        Alert.alert('Erreur', 'Veuillez entrer le nom du client.');
-        return;
-      }
-      if (!newOrderTotalPrice || isNaN(newOrderTotalPrice)) {
-        Alert.alert('Erreur', 'Veuillez entrer un prix total valide.');
-        return;
-      }
-      if (newOrderItems.length === 0 || newOrderItems.some(item => !item.name)) {
-        Alert.alert('Erreur', 'Veuillez ajouter au moins un article valide.');
-        return;
-      }
-
-      const newOrder = {
-        storeId: storeId,
-        client_first_name: newOrderClientName.split(' ')[0] || newOrderClientName,
-        client_last_name: newOrderClientName.split(' ')[1] || '',
-        price_total: parseFloat(newOrderTotalPrice),
-        status: newOrderStatus.toLowerCase(),
-        items: newOrderItems.map(item => ({
-          name: item.name,
-          quantity: item.quantity,
-          station: item.station,
-        })),
-        createdAt: new Date('2025-05-17T12:54:00+02:00').toISOString(), // Updated to 12:54 PM CET
-      };
-
-      const response = await fetch(`${serverUrl}/owner/orders`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(newOrder),
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.message || 'Failed to create order');
-      }
-
-      await fetchOrders(currentPage);
-      setAddOrderModalVisible(false);
-      setNewOrderItems([{ name: '', quantity: 1, station: 'Pizza' }]);
-      setNewOrderClientName('');
-      setNewOrderTotalPrice('');
-      setNewOrderStatus('Pending');
-      Alert.alert('Succès', 'Commande ajoutée avec succès.');
+      await updateOrderStatus(orderId, 'accepted');
+      setModalVisible(false);
+      setCheckedItems({});
     } catch (error) {
-      console.error('Error adding new order:', error);
-      Alert.alert('Erreur', 'Impossible d’ajouter la commande.');
+      console.error('Error validating order:', error);
+      Alert.alert('Erreur', 'Impossible de valider la commande.');
     }
   };
 
@@ -339,15 +297,26 @@ const StaffHome = () => {
           <Text style={styles.orderDetails}>Date: {item.date}</Text>
           <Text style={styles.orderDetails}>Heure: {item.time}</Text>
           <View style={styles.actionRow}>
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={() => {
-                setSelectedOrder(item);
-                setModalVisible(true);
-              }}
-            >
-              <Text style={styles.actionButtonText}>Détails</Text>
-            </TouchableOpacity>
+            <View style={styles.actionButtonContainer}>
+              <TouchableOpacity
+                style={[styles.actionButton, { marginRight: 8 }]}
+                onPress={() => {
+                  setSelectedOrder(item);
+                  setCheckedItems({});
+                  setModalVisible(true);
+                }}
+              >
+                <Icon name="info" size={16 * fontScale} color="#ffffff" style={styles.buttonIcon} />
+                <Text style={styles.actionButtonText}>Détails</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.actionButton}
+                onPress={() => handlePrintOrder(item)}
+              >
+                <Icon name="print" size={16 * fontScale} color="#ffffff" style={styles.buttonIcon} />
+                <Text style={styles.actionButtonText}>Imprimer</Text>
+              </TouchableOpacity>
+            </View>
             {item.status === 'Pending' && (
               <View style={styles.statusButtons}>
                 <TouchableOpacity
@@ -370,11 +339,21 @@ const StaffHome = () => {
     );
   };
 
-  const renderOrderDetailsModal = () =>
-    selectedOrder && (
+  const renderOrderDetailsModal = () => {
+    if (!selectedOrder) return null;
+
+    const isPending = selectedOrder.status === 'Pending';
+    const allItemsChecked = isPending ? selectedOrder.items.every(
+      (_, index) => checkedItems[index]
+    ) : false;
+
+    return (
       <Modal
         visible={modalVisible}
-        onRequestClose={() => setModalVisible(false)}
+        onRequestClose={() => {
+          setModalVisible(false);
+          setCheckedItems({});
+        }}
         transparent={true}
         animationType="slide"
       >
@@ -388,149 +367,72 @@ const StaffHome = () => {
               <Text style={styles.modalText}>Heure: {selectedOrder.time}</Text>
               <Text style={styles.modalText}>ID Unique: {selectedOrder.uniqueId}</Text>
               <Text style={styles.modalText}>Articles:</Text>
-              <FlatList
-                data={selectedOrder.items}
-                renderItem={({ item }) => (
-                  <Text style={styles.modalText}>
-                    • {item.name} x{item.quantity} (Station: {item.station})
-                  </Text>
-                )}
-                keyExtractor={(item, index) => index.toString()}
-              />
+              {selectedOrder.items.map((item, index) => (
+                <View key={index} style={styles.itemContainer}>
+                  {isPending ? (
+                    <TouchableOpacity
+                      style={styles.radioButton}
+                      onPress={() => {
+                        setCheckedItems((prev) => ({
+                          ...prev,
+                          [index]: !prev[index],
+                        }));
+                      }}
+                    >
+                      <View
+                        style={[
+                          styles.radioCircle,
+                          checkedItems[index] && styles.radioCircleChecked,
+                        ]}
+                      >
+                        {checkedItems[index] && (
+                          <View style={styles.radioInnerCircle} />
+                        )}
+                      </View>
+                      <Text style={styles.radioText}>
+                        {item.name} x{item.quantity} (Station: {item.station})
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <Text style={styles.modalText}>
+                      • {item.name} x{item.quantity} (Station: {item.station})
+                    </Text>
+                  )}
+                </View>
+              ))}
               <Text style={styles.modalText}>Total: {selectedOrder.totalPrice} EUR</Text>
               <Text style={styles.modalText}>Statut: {selectedOrder.status}</Text>
             </ScrollView>
-            <TouchableOpacity
-              style={styles.quitButton}
-              onPress={() => setModalVisible(false)}
-            >
-              <Text style={styles.quitButtonText}>Fermer</Text>
-            </TouchableOpacity>
+            <View style={styles.modalButtonContainer}>
+              {isPending && (
+                <TouchableOpacity
+                  style={[
+                    styles.actionButton,
+                    !allItemsChecked && styles.actionButtonDisabled,
+                    { marginRight: 8 },
+                  ]}
+                  onPress={() => handleValidateOrder(selectedOrder.id)}
+                  disabled={!allItemsChecked}
+                >
+                  <Icon name="check-circle" size={16 * fontScale} color="#ffffff" style={styles.buttonIcon} />
+                  <Text style={styles.actionButtonText}>Valider</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={styles.quitButton}
+                onPress={() => {
+                  setModalVisible(false);
+                  setCheckedItems({});
+                }}
+              >
+                <Text style={styles.quitButtonText}>Fermer</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
     );
-
-  const renderAddOrderModal = () => (
-    <Modal
-      visible={addOrderModalVisible}
-      onRequestClose={() => setAddOrderModalVisible(false)}
-      transparent={true}
-      animationType="slide"
-    >
-      <View style={styles.modalContainer}>
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Ajouter une Nouvelle Commande</Text>
-          <ScrollView>
-            <Text style={styles.modalText}>Nom du Client:</Text>
-            <TextInput
-              style={styles.input}
-              value={newOrderClientName}
-              onChangeText={setNewOrderClientName}
-              placeholder="Entrez le nom du client"
-            />
-
-            <Text style={styles.modalText}>Prix Total (EUR):</Text>
-            <TextInput
-              style={styles.input}
-              value={newOrderTotalPrice}
-              onChangeText={setNewOrderTotalPrice}
-              placeholder="Entrez le prix total"
-              keyboardType="numeric"
-            />
-
-            <Text style={styles.modalText}>Articles:</Text>
-            {newOrderItems.map((item, index) => (
-              <View key={index} style={styles.itemContainer}>
-                <TextInput
-                  style={[styles.input, styles.itemInput]}
-                  value={item.name}
-                  onChangeText={(text) => {
-                    const updatedItems = [...newOrderItems];
-                    updatedItems[index].name = text;
-                    setNewOrderItems(updatedItems);
-                  }}
-                  placeholder="Nom de l'article"
-                />
-                <TextInput
-                  style={[styles.input, styles.quantityInput]}
-                  value={item.quantity.toString()}
-                  onChangeText={(text) => {
-                    const updatedItems = [...newOrderItems];
-                    updatedItems[index].quantity = parseInt(text) || 1;
-                    setNewOrderItems(updatedItems);
-                  }}
-                  placeholder="Quantité"
-                  keyboardType="numeric"
-                />
-                <Picker
-                  selectedValue={item.station}
-                  style={styles.picker}
-                  onValueChange={(value) => {
-                    const updatedItems = [...newOrderItems];
-                    updatedItems[index].station = value;
-                    setNewOrderItems(updatedItems);
-                  }}
-                >
-                  {stations.filter(s => s !== 'All').map((station) => (
-                    <Picker.Item
-                      key={station}
-                      label={station.replace('Chef de ', '')}
-                      value={station.replace('Chef de ', '')}
-                    />
-                  ))}
-                </Picker>
-                <TouchableOpacity
-                  style={styles.removeItemButton}
-                  onPress={() => {
-                    if (newOrderItems.length > 1) {
-                      const updatedItems = newOrderItems.filter((_, i) => i !== index);
-                      setNewOrderItems(updatedItems);
-                    }
-                  }}
-                >
-                  <Text style={styles.removeItemButtonText}>Supprimer</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-            <TouchableOpacity
-              style={styles.addItemButton}
-              onPress={() => setNewOrderItems([...newOrderItems, { name: '', quantity: 1, station: 'Pizza' }])}
-            >
-              <Text style={styles.addItemButtonText}>Ajouter un Article</Text>
-            </TouchableOpacity>
-
-            <Text style={styles.modalText}>Statut:</Text>
-            <Picker
-              selectedValue={newOrderStatus}
-              style={styles.picker}
-              onValueChange={(itemValue) => setNewOrderStatus(itemValue)}
-            >
-              <Picker.Item label="Pending" value="Pending" />
-              <Picker.Item label="Ready" value="Ready" />
-              <Picker.Item label="Missed" value="Missed" />
-            </Picker>
-
-            <Text style={styles.modalText}>Date et Heure: 17/05/2025 12:54</Text>
-          </ScrollView>
-          <View style={styles.modalButtonContainer}>
-            <TouchableOpacity
-              style={styles.submitButton}
-              onPress={addNewOrder}
-            >
-              <Text style={styles.submitButtonText}>Ajouter</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.quitButton}
-              onPress={() => setAddOrderModalVisible(false)}
-            >
-              <Text style={styles.quitButtonText}>Annuler</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
+  };
 
   const Pagination = ({ currentPage, totalPages, onPageChange }) => (
     <View style={styles.paginationContainer}>
@@ -630,16 +532,7 @@ const StaffHome = () => {
         <Animated.View style={[styles.headerContainer, { opacity: fadeAnim }]}>
           <Text style={styles.header}>Tableau de Bord du Personnel</Text>
         </Animated.View>
-
-        <TouchableOpacity
-          style={styles.addOrderButton}
-          onPress={() => setAddOrderModalVisible(true)}
-        >
-          <Text style={styles.addOrderButtonText}>Ajouter une Commande</Text>
-        </TouchableOpacity>
-
         {renderFilterMenu()}
-
         {filteredOrders.length > 0 ? (
           <>
             <FlatList
@@ -660,7 +553,6 @@ const StaffHome = () => {
           <Text style={styles.emptyText}>Aucune commande disponible.</Text>
         )}
         {renderOrderDetailsModal()}
-        {renderAddOrderModal()}
       </View>
     </View>
   );
@@ -693,20 +585,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 6,
-  },
-  addOrderButton: {
-    backgroundColor: '#E73E01',
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    alignSelf: 'center',
-    marginBottom: 24,
-  },
-  addOrderButtonText: {
-    color: '#ffffff',
-    fontSize: 16 * fontScale,
-    fontWeight: '600',
-    textAlign: 'center',
   },
   filterContainer: {
     marginBottom: 24,
@@ -810,18 +688,31 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     marginTop: 12,
   },
+  actionButtonContainer: {
+    flexDirection: 'row',
+    width: '100%',
+    justifyContent: 'space-between',
+  },
   actionButton: {
     backgroundColor: '#E73E01',
     borderRadius: 10,
     paddingVertical: 10,
     paddingHorizontal: 20,
-    width: '100%',
+    flex: 1,
     alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  actionButtonDisabled: {
+    backgroundColor: '#d1d5db',
   },
   actionButtonText: {
     color: '#ffffff',
     fontSize: 14 * fontScale,
     fontWeight: '600',
+  },
+  buttonIcon: {
+    marginRight: 6,
   },
   statusButtons: {
     flexDirection: 'row',
@@ -918,74 +809,40 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     lineHeight: 22,
   },
-  input: {
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 12,
-    fontSize: 14 * fontScale,
-    color: '#1f2937',
-  },
   itemContainer: {
+    marginBottom: 10,
+  },
+  radioButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
   },
-  itemInput: {
-    flex: 2,
-    marginRight: 8,
-  },
-  quantityInput: {
-    flex: 1,
-    marginRight: 8,
-  },
-  picker: {
-    flex: 1,
-    height: 50,
-    marginRight: 8,
-  },
-  removeItemButton: {
-    backgroundColor: '#ff3b30',
-    borderRadius: 8,
-    padding: 8,
-  },
-  removeItemButtonText: {
-    color: '#ffffff',
-    fontSize: 12 * fontScale,
-    fontWeight: '600',
-  },
-  addItemButton: {
-    backgroundColor: '#34c759',
+  radioCircle: {
+    width: 20,
+    height: 20,
     borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    alignSelf: 'center',
-    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: '#E73E01',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
   },
-  addItemButtonText: {
-    color: '#ffffff',
-    fontSize: 14 * fontScale,
-    fontWeight: '600',
+  radioCircleChecked: {
+    backgroundColor: '#E73E01',
+  },
+  radioInnerCircle: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#ffffff',
+  },
+  radioText: {
+    fontSize: 15 * fontScale,
+    color: '#1f2937',
   },
   modalButtonContainer: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     marginTop: 16,
-  },
-  submitButton: {
-    backgroundColor: '#34c759',
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    alignItems: 'center',
-    flex: 1,
-    marginRight: 8,
-  },
-  submitButtonText: {
-    fontSize: 15 * fontScale,
-    fontWeight: '600',
-    color: '#ffffff',
   },
   quitButton: {
     backgroundColor: '#E73E01',
