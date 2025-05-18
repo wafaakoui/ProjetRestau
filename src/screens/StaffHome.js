@@ -135,8 +135,14 @@ const StaffHome = () => {
     async (page = 1) => {
       try {
         const token = await AsyncStorage.getItem('userToken');
-        if (!token) throw new Error('No authentication token found');
+        if (!token) {
+          Alert.alert('Erreur', 'Aucun token d\'authentification trouvé. Veuillez vous reconnecter.', [
+            { text: 'OK', onPress: () => navigation.navigate('Login') },
+          ]);
+          return;
+        }
 
+        console.log(`Fetching orders for store ${storeId}, page ${page}, limit ${ordersPerPage}`);
         const response = await fetch(
           `${serverUrl}/owner/orders/${storeId}?page=${page}&limit=${ordersPerPage}`,
           {
@@ -145,8 +151,12 @@ const StaffHome = () => {
         );
         const data = await response.json();
 
-        if (!response.ok) throw new Error(data.message || 'No orders found');
+        if (!response.ok) {
+          console.error('API Error:', data.message || 'No orders found');
+          throw new Error(data.message || 'Échec de la récupération des commandes');
+        }
 
+        console.log('Raw API response:', data);
         const ordersData = data?.data || data || [];
         const mappedOrders = ordersData.map((order, index) => ({
           id: order._id,
@@ -157,7 +167,7 @@ const StaffHome = () => {
           items: order.items?.map((item) => ({
             name: item.name,
             quantity: item.quantity || 1,
-            station: item.station || 'Unknown',
+            station: item.station?.toString().trim() || 'Unknown',
           })) || [],
           totalPrice: order.price_total || 0,
           status: mapStatus(order.status),
@@ -167,30 +177,46 @@ const StaffHome = () => {
         }));
 
         const sortedOrders = mappedOrders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        console.log('Mapped and sorted orders:', sortedOrders);
         setOrders(sortedOrders);
       } catch (error) {
-        console.error('Error fetching orders:', error);
+        console.error('Error fetching orders:', error.message);
         Alert.alert('Erreur', 'Impossible de charger les commandes.');
         setOrders([]);
       }
     },
-    [storeId, serverUrl]
+    [storeId, serverUrl, navigation]
   );
 
   const filterOrders = useCallback(() => {
     let filtered = [...orders];
 
+    console.log(`Filtering with Station: ${currentStation}, Status: ${currentStatus}`);
     if (currentStation !== 'All') {
-      const stationName = currentStation.replace('Chef de ', '');
-      filtered = filtered.filter((order) =>
-        order.items.some((item) => item.station === stationName)
-      );
+      const stationName = currentStation.replace('Chef de ', '').toLowerCase();
+      filtered = filtered.filter((order) => {
+        const hasMatchingItem = order.items.some((item) => {
+          const itemStation = item.station?.toLowerCase().trim() || '';
+          const matchesStation = itemStation === stationName;
+          console.log(
+            `Order ${order.orderNumber}, Item: ${item.name}, Station: ${itemStation}, ` +
+            `Target: ${stationName}, Matches: ${matchesStation}`
+          );
+          return matchesStation;
+        });
+        return hasMatchingItem;
+      });
     }
 
     if (currentStatus !== 'All') {
-      filtered = filtered.filter((order) => order.status === currentStatus);
+      filtered = filtered.filter((order) => {
+        const matchesStatus = order.status === currentStatus;
+        console.log(`Order ${order.orderNumber}, Status: ${order.status}, Target: ${currentStatus}, Matches: ${matchesStatus}`);
+        return matchesStatus;
+      });
     }
 
+    console.log('Filtered Orders:', filtered.map((o) => o.orderNumber));
     setFilteredOrders(filtered);
   }, [orders, currentStation, currentStatus]);
 
@@ -690,7 +716,7 @@ const styles = StyleSheet.create({
   },
   actionButtonContainer: {
     flexDirection: 'row',
-    width: '100%',
+    width: '100',
     justifyContent: 'space-between',
   },
   actionButton: {
