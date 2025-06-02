@@ -36,12 +36,14 @@ const AddProductScreen = () => {
   const CATEGORY_NAME = category?.name;
 
   const options = [
-    { title: 'Users', icon: 'users', screen: 'UserManagement' },
-    { title: 'Station', icon: 'tasks', screen: 'Station' },
-    { title: 'Menu', icon: 'utensils', screen: 'MenuManagement' },
-    { title: 'Order', icon: 'list', screen: 'OrderView' },
-    { title: 'Logout', icon: 'sign-out-alt', screen: 'Login' },
+    { title: "Users", icon: "users", screen: "UserManagement" },
+    { title: "Station", icon: "tasks", screen: "Station" },
+    { title: "Menu", icon: "utensils", screen: "MenuManagement" },
+    { title: "Order", icon: "list", screen: "OrderView" },
+    { title: "Dashboard", icon: "chart-line", screen: "Dashboard" },
+    { title: "Logout", icon: "sign-out-alt", screen: "Login" },
   ];
+
 
   // Fetch store ID from AsyncStorage
   const getStoreId = async () => {

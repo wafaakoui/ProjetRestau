@@ -36,24 +36,47 @@ const StaffHome = () => {
   const [fadeAnim] = useState(new Animated.Value(0));
   const [socket, setSocket] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
+  const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [checkedItems, setCheckedItems] = useState({});
+  const [showStationFilter, setShowStationFilter] = useState(false);
+  const [showStatusFilter, setShowStatusFilter] = useState(false);
   const ordersPerPage = 10;
   const serverUrl = 'https://server.eatorder.fr:8000';
   const statusFilters = ['All', 'Pending', 'Ready', 'Missed'];
 
-  const options = [
-    { title: 'Commandes', icon: 'list', screen: 'StaffHome' },
-    {
-      title: 'Déconnexion',
-      icon: 'sign-out-alt',
-      screen: 'Login',
-      onPress: async () => {
-        await AsyncStorage.removeItem('userToken');
-        navigation.navigate('Login');
-      },
-    },
-  ];
+  // Fonction pour obtenir la couleur de fond selon l'état sélectionné
+  const getBackgroundColorByStatus = (status) => {
+    const backgroundColors = {
+      'All': '#f8fafc',
+      'Pending': '#fefce8',
+      'Ready': '#e6f4ea',
+      'Missed': '#fee2e2'
+    };
+    return backgroundColors[status] || '#f8fafc';
+  };
+
+  // Fonction pour obtenir la couleur de l'en-tête selon l'état
+  const getHeaderColorByStatus = (status) => {
+    const headerColors = {
+      'All': '#E73E01',
+      'Pending': '#f59e0b',
+      'Ready': '#34c759',
+      'Missed': '#ff3b30'
+    };
+    return headerColors[status] || '#E73E01';
+  };
+
+  // Fonction pour obtenir la couleur des boutons d'action selon l'état
+  const getActionButtonColorByStatus = (status) => {
+    const buttonColors = {
+      'All': '#E73E01',
+      'Pending': '#f59e0b',
+      'Ready': '#34c759',
+      'Missed': '#ff3b30'
+    };
+    return buttonColors[status] || '#E73E01';
+  };
 
   const formatTime = (dateString) => {
     return new Date(dateString).toLocaleTimeString('fr-FR', {
@@ -107,7 +130,7 @@ const StaffHome = () => {
       if (!token) throw new Error('No authentication token found');
 
       const order = orders.find((o) => o.id === orderId);
-      if (order.status === mapStatus(newStatus)) return;
+      if (order && order.status === mapStatus(newStatus)) return;
 
       const response = await fetch(`${serverUrl}/owner/orders/${orderId}/status`, {
         method: 'PUT',
@@ -124,7 +147,14 @@ const StaffHome = () => {
       }
 
       await fetchOrders(currentPage);
-      Alert.alert('Succès', `Commande marquée comme ${newStatus === 'accepted' ? 'Prête' : 'Manquée'}`);
+      
+      const statusMap = {
+        pending: 'Pending',
+        accepted: 'Prête',
+        missed: 'Manquée',
+      };
+      
+      Alert.alert('Succès', `Commande marquée comme ${statusMap[newStatus] || newStatus}`);
     } catch (error) {
       console.error('Error updating status:', error);
       Alert.alert('Erreur', 'Impossible de mettre à jour le statut de la commande.');
@@ -142,7 +172,6 @@ const StaffHome = () => {
           return;
         }
 
-        console.log(`Fetching orders for store ${storeId}, page ${page}, limit ${ordersPerPage}`);
         const response = await fetch(
           `${serverUrl}/owner/orders/${storeId}?page=${page}&limit=${ordersPerPage}`,
           {
@@ -156,7 +185,6 @@ const StaffHome = () => {
           throw new Error(data.message || 'Échec de la récupération des commandes');
         }
 
-        console.log('Raw API response:', data);
         const ordersData = data?.data || data || [];
         const mappedOrders = ordersData.map((order, index) => ({
           id: order._id,
@@ -177,7 +205,6 @@ const StaffHome = () => {
         }));
 
         const sortedOrders = mappedOrders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        console.log('Mapped and sorted orders:', sortedOrders);
         setOrders(sortedOrders);
       } catch (error) {
         console.error('Error fetching orders:', error.message);
@@ -191,32 +218,22 @@ const StaffHome = () => {
   const filterOrders = useCallback(() => {
     let filtered = [...orders];
 
-    console.log(`Filtering with Station: ${currentStation}, Status: ${currentStatus}`);
     if (currentStation !== 'All') {
       const stationName = currentStation.replace('Chef de ', '').toLowerCase();
       filtered = filtered.filter((order) => {
-        const hasMatchingItem = order.items.some((item) => {
+        return order.items.some((item) => {
           const itemStation = item.station?.toLowerCase().trim() || '';
-          const matchesStation = itemStation === stationName;
-          console.log(
-            `Order ${order.orderNumber}, Item: ${item.name}, Station: ${itemStation}, ` +
-            `Target: ${stationName}, Matches: ${matchesStation}`
-          );
-          return matchesStation;
+          return itemStation === stationName;
         });
-        return hasMatchingItem;
       });
     }
 
     if (currentStatus !== 'All') {
       filtered = filtered.filter((order) => {
-        const matchesStatus = order.status === currentStatus;
-        console.log(`Order ${order.orderNumber}, Status: ${order.status}, Target: ${currentStatus}, Matches: ${matchesStatus}`);
-        return matchesStatus;
+        return order.status === currentStatus;
       });
     }
 
-    console.log('Filtered Orders:', filtered.map((o) => o.orderNumber));
     setFilteredOrders(filtered);
   }, [orders, currentStation, currentStatus]);
 
@@ -271,13 +288,6 @@ const StaffHome = () => {
 
   const handlePrintOrder = (order) => {
     Alert.alert('Impression', `Impression de la commande ${order.orderNumber}...`);
-    console.log('Printing order:', {
-      orderNumber: order.orderNumber,
-      clientName: order.clientName,
-      items: order.items,
-      totalPrice: order.totalPrice,
-      status: order.status,
-    });
   };
 
   const handleValidateOrder = async (orderId) => {
@@ -291,6 +301,46 @@ const StaffHome = () => {
     }
   };
 
+  const handleStatusChange = async (newStatus) => {
+    if (!selectedOrder) return;
+    
+    try {
+      await updateOrderStatus(selectedOrder.id, newStatus);
+      setStatusModalVisible(false);
+    } catch (error) {
+      console.error('Error changing status:', error);
+      Alert.alert('Erreur', 'Impossible de changer le statut');
+    }
+  };
+
+  // AJOUT: Fonction pour rendre la liste de filtrage
+  const renderFilterList = (items, selectedItem, onSelect, visible) => {
+    if (!visible) return null;
+    
+    return (
+      <View style={styles.filterListContainer}>
+        <ScrollView style={styles.filterScrollView}>
+          {items.map((item, index) => (
+            <TouchableOpacity
+              key={index}
+              style={[
+                styles.filterItem,
+                selectedItem === item && styles.selectedFilterItem
+              ]}
+              onPress={() => {
+                onSelect(item);
+                setShowStationFilter(false);
+                setShowStatusFilter(false);
+              }}
+            >
+              <Text style={styles.filterItemText}>{item}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+    );
+  };
+
   const renderOrderItem = ({ item }) => {
     const statusColors = {
       Ready: { bg: '#e6f4ea', border: '#34c759' },
@@ -302,6 +352,8 @@ const StaffHome = () => {
     const displayItems = stationName
       ? item.items.filter((i) => i.station === stationName)
       : item.items;
+
+    const actionButtonColor = getActionButtonColorByStatus(currentStatus);
 
     return (
       <Animated.View
@@ -325,21 +377,29 @@ const StaffHome = () => {
           <View style={styles.actionRow}>
             <View style={styles.actionButtonContainer}>
               <TouchableOpacity
-                style={[styles.actionButton, { marginRight: 8 }]}
+                style={[styles.actionButton, { marginRight: 2, backgroundColor: actionButtonColor }]}
+                onPress={() => {
+                  setSelectedOrder(item);
+                  setStatusModalVisible(true);
+                }}
+              >
+                <Text style={styles.actionButtonText}>État</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionButton, { marginRight: 2, backgroundColor: actionButtonColor }]}
                 onPress={() => {
                   setSelectedOrder(item);
                   setCheckedItems({});
                   setModalVisible(true);
                 }}
               >
-                <Icon name="info" size={16 * fontScale} color="#ffffff" style={styles.buttonIcon} />
                 <Text style={styles.actionButtonText}>Détails</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={styles.actionButton}
+                style={[styles.actionButton, { backgroundColor: actionButtonColor }]}
                 onPress={() => handlePrintOrder(item)}
               >
-                <Icon name="print" size={16 * fontScale} color="#ffffff" style={styles.buttonIcon} />
+                <Icon name="print" size={10 * fontScale} color="#ffffff" style={styles.buttonIcon} />
                 <Text style={styles.actionButtonText}>Imprimer</Text>
               </TouchableOpacity>
             </View>
@@ -373,6 +433,8 @@ const StaffHome = () => {
       (_, index) => checkedItems[index]
     ) : false;
 
+    const actionButtonColor = getActionButtonColorByStatus(currentStatus);
+
     return (
       <Modal
         visible={modalVisible}
@@ -385,7 +447,9 @@ const StaffHome = () => {
       >
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Détails de la Commande</Text>
+            <Text style={[styles.modalTitle, { color: getHeaderColorByStatus(currentStatus) }]}>
+              Détails de la Commande
+            </Text>
             <ScrollView>
               <Text style={styles.modalText}>Commande: {selectedOrder.orderNumber}</Text>
               <Text style={styles.modalText}>Client: {selectedOrder.clientName}</Text>
@@ -408,7 +472,8 @@ const StaffHome = () => {
                       <View
                         style={[
                           styles.radioCircle,
-                          checkedItems[index] && styles.radioCircleChecked,
+                          { borderColor: actionButtonColor },
+                          checkedItems[index] && { backgroundColor: actionButtonColor },
                         ]}
                       >
                         {checkedItems[index] && (
@@ -434,6 +499,7 @@ const StaffHome = () => {
                 <TouchableOpacity
                   style={[
                     styles.actionButton,
+                    { backgroundColor: actionButtonColor },
                     !allItemsChecked && styles.actionButtonDisabled,
                     { marginRight: 8 },
                   ]}
@@ -445,7 +511,7 @@ const StaffHome = () => {
                 </TouchableOpacity>
               )}
               <TouchableOpacity
-                style={styles.quitButton}
+                style={[styles.quitButton, { backgroundColor: actionButtonColor }]}
                 onPress={() => {
                   setModalVisible(false);
                   setCheckedItems({});
@@ -460,105 +526,197 @@ const StaffHome = () => {
     );
   };
 
-  const Pagination = ({ currentPage, totalPages, onPageChange }) => (
-    <View style={styles.paginationContainer}>
-      <TouchableOpacity
-        style={[
-          styles.paginationButton,
-          currentPage === 1 && styles.paginationButtonDisabled,
-        ]}
-        onPress={() => onPageChange(currentPage - 1)}
-        disabled={currentPage === 1}
+  const renderStatusChangeModal = () => {
+    if (!selectedOrder) return null;
+    
+    const actionButtonColor = getActionButtonColorByStatus(currentStatus);
+    
+    return (
+      <Modal
+        visible={statusModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setStatusModalVisible(false)}
       >
-        <Text style={styles.paginationButtonText}>Précédent</Text>
-      </TouchableOpacity>
-      <Text style={styles.pageIndicator}>
-        Page {currentPage} sur {totalPages || 1}
-      </Text>
-      <TouchableOpacity
-        style={[
-          styles.paginationButton,
-          currentPage === totalPages && styles.paginationButtonDisabled,
-        ]}
-        onPress={() => onPageChange(currentPage + 1)}
-        disabled={currentPage === totalPages}
-      >
-        <Text style={styles.paginationButtonText}>Suivant</Text>
-      </TouchableOpacity>
-    </View>
-  );
-
-  const renderFilterMenu = () => (
-    <View style={styles.filterContainer}>
-      <View style={styles.stationFilter}>
-        {stations.map((station) => (
-          <TouchableOpacity
-            key={station}
-            style={[
-              styles.stationButton,
-              currentStation === station && styles.stationButtonActive,
-            ]}
-            onPress={() => {
-              setCurrentStation(station);
-              setCurrentStatus('All');
-              setCurrentPage(1);
-            }}
-          >
-            <Text
-              style={[
-                styles.stationButtonText,
-                currentStation === station && styles.stationButtonTextActive,
-              ]}
-            >
-              {station}
+        <View style={styles.modalContainer}>
+          <View style={styles.statusModalContent}>
+            <Text style={[styles.modalTitle, { color: getHeaderColorByStatus(currentStatus) }]}>
+              Changer l'état de la commande
             </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      {currentStation !== 'All' && (
-        <View style={styles.statusFilter}>
-          {statusFilters.map((status) => (
+            
             <TouchableOpacity
-              key={`${currentStation}-${status}`}
-              style={[
-                styles.statusButtonFilter,
-                currentStatus === status && styles.statusButtonFilterActive,
-              ]}
-              onPress={() => {
-                setCurrentStatus(status);
-                setCurrentPage(1);
-              }}
+              style={[styles.statusOption, { borderColor: '#f59e0b' }]}
+              onPress={() => handleStatusChange('pending')}
             >
-              <Text
-                style={[
-                  styles.statusButtonTextFilter,
-                  currentStatus === status && styles.statusButtonTextFilterActive,
-                ]}
-              >
-                {status === 'All' ? 'Tous' : status}
-              </Text>
+              <Text style={styles.statusOptionText}>Pending</Text>
             </TouchableOpacity>
-          ))}
+            
+            <TouchableOpacity
+              style={[styles.statusOption, { borderColor: '#34c759' }]}
+              onPress={() => handleStatusChange('accepted')}
+            >
+              <Text style={styles.statusOptionText}>Ready</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={[styles.statusOption, { borderColor: '#ff3b30' }]}
+              onPress={() => handleStatusChange('missed')}
+            >
+              <Text style={styles.statusOptionText}>Missed</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={[styles.quitButton, { backgroundColor: actionButtonColor }]}
+              onPress={() => setStatusModalVisible(false)}
+            >
+              <Text style={styles.quitButtonText}>Annuler</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      )}
-    </View>
-  );
+      </Modal>
+    );
+  };
+
+  const Pagination = ({ currentPage, totalPages, onPageChange }) => {
+    const actionButtonColor = getActionButtonColorByStatus(currentStatus);
+    
+    return (
+      <View style={styles.paginationContainer}>
+        <TouchableOpacity
+          style={[
+            styles.paginationButton,
+            { backgroundColor: actionButtonColor },
+            currentPage === 1 && styles.paginationButtonDisabled,
+          ]}
+          onPress={() => onPageChange(currentPage - 1)}
+          disabled={currentPage === 1}
+        >
+          <Text style={styles.paginationButtonText}>Précédent</Text>
+        </TouchableOpacity>
+        <Text style={styles.pageIndicator}>
+          Page {currentPage} sur {totalPages || 1}
+        </Text>
+        <TouchableOpacity
+          style={[
+            styles.paginationButton,
+            { backgroundColor: actionButtonColor },
+            currentPage >= totalPages && styles.paginationButtonDisabled,
+          ]}
+          onPress={() => onPageChange(currentPage + 1)}
+          disabled={currentPage >= totalPages}
+        >
+          <Text style={styles.paginationButtonText}>Suivant</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  const options = [
+    {
+      title: 'Toutes les Commandes',
+      icon: 'list-alt',
+      onPress: () => {
+        setCurrentStation('All');
+        setCurrentStatus('All');
+        setCurrentPage(1);
+      },
+    },
+    { title: 'Commandes', icon: 'list', screen: 'StaffHome' },
+    {
+      title: 'Déconnexion',
+      icon: 'sign-out-alt',
+      screen: 'Login',
+      onPress: async () => {
+        await AsyncStorage.removeItem('userToken');
+        navigation.navigate('Login');
+      },
+    },
+  ];
 
   const paginatedOrders = filteredOrders.slice(
     (currentPage - 1) * ordersPerPage,
     currentPage * ordersPerPage
   );
-  const totalPages = Math.ceil(filteredOrders.length / ordersPerPage);
+  const totalPages = Math.ceil(filteredOrders.length / ordersPerPage) || 1;
   const numColumns = Math.min(Math.max(Math.floor((width - 40) / ticketSize), 1), 5);
 
   return (
-    <View style={styles.container}>
-      <Sidebar options={options} />
+    <View style={[styles.container, { backgroundColor: getBackgroundColorByStatus(currentStatus) }]}>
+      <Sidebar
+        options={options}
+        stations={stations}
+        currentStation={currentStation}
+        setCurrentStation={setCurrentStation}
+        setCurrentStatus={setCurrentStatus}
+        setCurrentPage={setCurrentPage}
+        statusFilters={statusFilters}
+        currentStatus={currentStatus}
+      />
       <View style={styles.mainContent}>
         <Animated.View style={[styles.headerContainer, { opacity: fadeAnim }]}>
-          <Text style={styles.header}>Tableau de Bord du Personnel</Text>
+          <Text style={[styles.header, { backgroundColor: getHeaderColorByStatus(currentStatus) }]}>
+            Tableau de Bord du Personnel
+          </Text>
         </Animated.View>
-        {renderFilterMenu()}
+        
+        {/* AJOUT: Barre de filtres */}
+        <View style={styles.filterBar}>
+          <TouchableOpacity 
+            style={styles.filterButton}
+            onPress={() => {
+              setShowStatusFilter(false);
+              setShowStationFilter(!showStationFilter);
+            }}
+          >
+            <Text style={styles.filterButtonText}>
+              {currentStation === 'All' ? 'Toutes les stations' : currentStation}
+            </Text>
+            <Icon 
+              name={showStationFilter ? 'arrow-drop-up' : 'arrow-drop-down'} 
+              size={24} 
+              color="#E73E01" 
+            />
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.filterButton}
+            onPress={() => {
+              setShowStationFilter(false);
+              setShowStatusFilter(!showStatusFilter);
+            }}
+          >
+            <Text style={styles.filterButtonText}>
+              {currentStatus === 'All' ? 'Tous les statuts' : currentStatus}
+            </Text>
+            <Icon 
+              name={showStatusFilter ? 'arrow-drop-up' : 'arrow-drop-down'} 
+              size={24} 
+              color="#E73E01" 
+            />
+          </TouchableOpacity>
+        </View>
+        
+        {/* AJOUT: Listes de filtrage */}
+        {renderFilterList(
+          stations, 
+          currentStation, 
+          (station) => {
+            setCurrentStation(station);
+            setCurrentPage(1);
+          },
+          showStationFilter
+        )}
+        
+        {renderFilterList(
+          statusFilters, 
+          currentStatus, 
+          (status) => {
+            setCurrentStatus(status);
+            setCurrentPage(1);
+          },
+          showStatusFilter
+        )}
+        
         {filteredOrders.length > 0 ? (
           <>
             <FlatList
@@ -571,7 +729,7 @@ const StaffHome = () => {
             />
             <Pagination
               currentPage={currentPage}
-              totalPages={totalPages || 1}
+              totalPages={totalPages}
               onPageChange={setCurrentPage}
             />
           </>
@@ -579,6 +737,7 @@ const StaffHome = () => {
           <Text style={styles.emptyText}>Aucune commande disponible.</Text>
         )}
         {renderOrderDetailsModal()}
+        {renderStatusChangeModal()}
       </View>
     </View>
   );
@@ -588,7 +747,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     flexDirection: 'row',
-    backgroundColor: '#f8fafc',
+    // backgroundColor supprimé car maintenant dynamique
   },
   mainContent: {
     flex: 1,
@@ -604,79 +763,13 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     paddingVertical: 12,
     paddingHorizontal: 24,
-    backgroundColor: '#E73E01',
+    // backgroundColor supprimé car maintenant dynamique
     borderRadius: 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 6,
-  },
-  filterContainer: {
-    marginBottom: 24,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  stationFilter: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  stationButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    margin: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E73E01',
-    backgroundColor: '#ffffff',
-    alignItems: 'center',
-  },
-  stationButtonActive: {
-    backgroundColor: '#E73E01',
-    borderColor: '#d32f2f',
-  },
-  stationButtonText: {
-    fontSize: 14 * fontScale,
-    color: '#E73E01',
-    fontWeight: '500',
-  },
-  stationButtonTextActive: {
-    color: '#ffffff',
-  },
-  statusFilter: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-  },
-  statusButtonFilter: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    margin: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E73E01',
-    backgroundColor: '#f1f5f9',
-  },
-  statusButtonFilterActive: {
-    backgroundColor: '#E73E01',
-    borderColor: '#d32f2f',
-  },
-  statusButtonTextFilter: {
-    fontSize: 14 * fontScale,
-    color: '#E73E01',
-    fontWeight: '500',
-    textTransform: 'uppercase',
-  },
-  statusButtonTextFilterActive: {
-    color: '#ffffff',
   },
   ticketContainer: {
     width: ticketSize,
@@ -716,18 +809,18 @@ const styles = StyleSheet.create({
   },
   actionButtonContainer: {
     flexDirection: 'row',
-    width: '100',
     justifyContent: 'space-between',
   },
   actionButton: {
-    backgroundColor: '#E73E01',
+    // backgroundColor supprimé car maintenant dynamique
     borderRadius: 10,
     paddingVertical: 10,
-    paddingHorizontal: 20,
+    paddingHorizontal: 12,
     flex: 1,
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'center',
+    marginHorizontal: 2,
   },
   actionButtonDisabled: {
     backgroundColor: '#d1d5db',
@@ -744,6 +837,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     marginTop: 8,
+    width: '100%',
   },
   statusButton: {
     borderRadius: 8,
@@ -783,7 +877,7 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
   },
   paginationButton: {
-    backgroundColor: '#E73E01',
+    // backgroundColor supprimé car maintenant dynamique
     borderRadius: 10,
     paddingVertical: 10,
     paddingHorizontal: 16,
@@ -822,10 +916,17 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 6,
   },
+  statusModalContent: {
+    width: '70%',
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+  },
   modalTitle: {
     fontSize: 22 * fontScale,
     fontWeight: '700',
-    color: '#E73E01',
+    // color supprimé car maintenant dynamique
     marginBottom: 16,
     textAlign: 'center',
   },
@@ -841,19 +942,20 @@ const styles = StyleSheet.create({
   radioButton: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingVertical: 5,
   },
   radioCircle: {
     width: 20,
     height: 20,
     borderRadius: 10,
     borderWidth: 2,
-    borderColor: '#E73E01',
+    // borderColor supprimé car maintenant dynamique
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 10,
   },
   radioCircleChecked: {
-    backgroundColor: '#E73E01',
+    // backgroundColor supprimé car maintenant dynamique
   },
   radioInnerCircle: {
     width: 10,
@@ -870,19 +972,93 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     marginTop: 16,
   },
+  statusOption: {
+    width: '100%',
+    padding: 16,
+    marginVertical: 8,
+    backgroundColor: '#f8fafc',
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 2,
+    // borderColor supprimé car maintenant dynamique
+  },
+  statusOptionText: {
+    fontSize: 16 * fontScale,
+    fontWeight: '600',
+    color: '#1f2937',
+  },
   quitButton: {
-    backgroundColor: '#E73E01',
+    // backgroundColor supprimé car maintenant dynamique
     borderRadius: 10,
     paddingVertical: 12,
     paddingHorizontal: 24,
     alignItems: 'center',
-    flex: 1,
+    marginTop: 16,
+    width: '100%',
   },
   quitButtonText: {
     fontSize: 15 * fontScale,
     fontWeight: '600',
     color: '#ffffff',
     letterSpacing: 0.5,
+  },
+    filterBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingHorizontal: 8,
+  },
+  filterButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    minWidth: '48%',
+  },
+  filterButtonText: {
+    fontSize: 14 * fontScale,
+    fontWeight: '600',
+    color: '#1f2937',
+    marginRight: 8,
+    flexShrink: 1,
+  },
+  filterListContainer: {
+    position: 'absolute',
+    top: 70,
+    left: 8,
+    right: 8,
+    maxHeight: 200,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    elevation: 5,
+    zIndex: 100,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  filterScrollView: {
+    maxHeight: 200,
+  },
+  filterItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  selectedFilterItem: {
+    backgroundColor: '#f1f5f9',
+  },
+  filterItemText: {
+    fontSize: 14 * fontScale,
+    color: '#1f2937',
   },
 });
 

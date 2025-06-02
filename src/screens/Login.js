@@ -255,9 +255,7 @@ const Login = () => {
         {isLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Se connecter</Text>}
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={() => navigation.navigate('ResetPassword')}>
-        <Text style={styles.forgotPasswordText}>Mot de passe oublié ?</Text>
-      </TouchableOpacity>
+    
     </View>
   );
 };

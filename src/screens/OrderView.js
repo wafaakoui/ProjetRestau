@@ -38,13 +38,15 @@ const OrderView = () => {
   const [fadeAnim] = useState(new Animated.Value(0));
   const [timer, setTimer] = useState(0);
 
-  const options = [
-    { title: 'Users', icon: 'users', screen: 'UserManagement' },
-    { title: 'Station', icon: 'tasks', screen: 'Station' },
-    { title: 'Menu', icon: 'utensils', screen: 'MenuManagement' },
-    { title: 'Order', icon: 'list', screen: 'OrderView' },
-    { title: 'Logout', icon: 'sign-out-alt', screen: 'Login' },
+   const options = [
+    { title: "Users", icon: "users", screen: "UserManagement" },
+    { title: "Station", icon: "tasks", screen: "Station" },
+    { title: "Menu", icon: "utensils", screen: "MenuManagement" },
+    { title: "Order", icon: "list", screen: "OrderView" },
+    { title: "Dashboard", icon: "chart-line", screen: "Dashboard" },
+    { title: "Logout", icon: "sign-out-alt", screen: "Login" },
   ];
+
 
   const formatTime = (dateString) => {
     return new Date(dateString).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });

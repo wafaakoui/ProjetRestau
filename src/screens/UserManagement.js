@@ -38,12 +38,14 @@ const UserManagement = () => {
 
   // Sidebar navigation options
   const options = [
-    { title: 'Users', icon: 'users', screen: 'UserManagement' },
-    { title: 'Station', icon: 'tasks', screen: 'Station' },
-    { title: 'Menu', icon: 'utensils', screen: 'MenuManagement' },
-    { title: 'Order', icon: 'list', screen: 'OrderView' },
-    { title: 'Logout', icon: 'sign-out-alt', screen: 'Login' },
+    { title: "Users", icon: "users", screen: "UserManagement" },
+    { title: "Station", icon: "tasks", screen: "Station" },
+    { title: "Menu", icon: "utensils", screen: "MenuManagement" },
+    { title: "Order", icon: "list", screen: "OrderView" },
+    { title: "Dashboard", icon: "chart-line", screen: "Dashboard" },
+    { title: "Logout", icon: "sign-out-alt", screen: "Login" },
   ];
+
   const pageTitle = route.params?.pageTitle || 'Gérer les Utilisateurs';
 
   // Retrieve JWT token from AsyncStorage

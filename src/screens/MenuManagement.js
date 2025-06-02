@@ -34,15 +34,18 @@ const MenuManagement = () => {
   const [storeId, setStoreId] = useState(null);
 
   const PRIMARY_API_URL = 'https://server.eatorder.fr:8000';
-  const BASE_URL = 'http://localhost:3000'; // API pour les stations, comme dans Station.js
+  const BASE_URL = 'http://localhost:3000';
 
-  const options = [
-    { title: 'Users', icon: 'users', screen: 'UserManagement' },
-    { title: 'Station', icon: 'tasks', screen: 'Station' },
-    { title: 'Menu', icon: 'utensils', screen: 'MenuManagement' },
-    { title: 'Order', icon: 'list', screen: 'OrderView' },
-    { title: 'Logout', icon: 'sign-out-alt', screen: 'Login' },
+
+    const options = [
+    { title: "Users", icon: "users", screen: "UserManagement" },
+    { title: "Station", icon: "tasks", screen: "Station" },
+    { title: "Menu", icon: "utensils", screen: "MenuManagement" },
+    { title: "Order", icon: "list", screen: "OrderView" },
+    { title: "Dashboard", icon: "chart-line", screen: "Dashboard" },
+    { title: "Logout", icon: "sign-out-alt", screen: "Login" },
   ];
+
 
   const fetchCategories = async (storeId) => {
     if (!storeId) return;
@@ -60,7 +63,7 @@ const MenuManagement = () => {
       setFilteredCategories(normalizedCategories.filter((cat) => cat.id));
       Animated.timing(fadeAnim, { toValue: 1, duration: 1000, useNativeDriver: true }).start();
     } catch (error) {
-      alertWithStyle('Error', `Unable to load data: ${error.message}`, 'error');
+      alertWithStyle('Error', `Unable to load categories: ${error.message}`, 'error');
     } finally {
       setIsLoading(false);
     }
@@ -77,7 +80,11 @@ const MenuManagement = () => {
       });
       if (!response.ok) throw new Error(`HTTP Error! Status: ${response.status}`);
       const data = await response.json();
-      setStations(data || []);
+      const normalizedStations = (data || []).map((station) => ({
+        id: station.id || station._id,
+        name: station.name || 'Unnamed Station',
+      }));
+      setStations(normalizedStations);
     } catch (error) {
       alertWithStyle('Error', `Unable to load stations: ${error.message}`, 'error');
     }
@@ -108,22 +115,38 @@ const MenuManagement = () => {
     }
   };
 
-  const assignStationToCategory = async (categoryId, stationId) => {
+  const assignStationToCategory = (categoryId, stationId) => {
     if (!storeId) return;
-    try {
-      const response = await fetch(`http://localhost:3000/assignStationToCategory/${categoryId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stationId, storeId }),
-      });
-      if (!response.ok) throw new Error(`Failed to assign station`);
-      setFilteredCategories((prev) =>
-        prev.map((cat) => (cat.id === categoryId ? { ...cat, assignedStationId: stationId } : cat))
-      );
-      alertWithStyle('Success', 'Station assigned successfully!', 'success');
-    } catch (error) {
-      alertWithStyle('Error', error.message, 'error');
-    }
+    const category = filteredCategories.find((cat) => cat.id === categoryId);
+    const station = stations.find((s) => s.id === stationId) || { name: 'No station' };
+    alertWithStyle(
+      'Confirm Assignment',
+      `Assign "${category.name}" to "${station.name}"?`,
+      'warning',
+      async () => {
+        setIsLoading(true);
+        try {
+          const token = await AsyncStorage.getItem('userToken');
+          const response = await fetch(`${BASE_URL}/assignStationToCategory/${categoryId}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`,
+            },
+            body: JSON.stringify({ stationId, storeId }),
+          });
+          if (!response.ok) throw new Error(`Failed to assign station`);
+          setFilteredCategories((prev) =>
+            prev.map((cat) => (cat.id === categoryId ? { ...cat, assignedStationId: stationId } : cat))
+          );
+          alertWithStyle('Success', 'Station assigned successfully!', 'success');
+        } catch (error) {
+          alertWithStyle('Error', `Failed to assign station: ${error.message}`, 'error');
+        } finally {
+          setIsLoading(false);
+        }
+      }
+    );
   };
 
   const navigateToAddProduct = (category) => {
@@ -276,6 +299,7 @@ const MenuManagement = () => {
       fontSize: 18 * fontScale,
       color: '#FFFFFF',
       fontWeight: '600',
+      marginTop: 10,
     },
   });
 

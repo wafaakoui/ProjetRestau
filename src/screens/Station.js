@@ -1,5 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet, TextInput, Animated, Modal, Dimensions } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  Animated,
+  Modal,
+  Dimensions,
+} from 'react-native';
 import { FontAwesome5 } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import Sidebar from '../components/Sidebar';
@@ -25,19 +35,22 @@ const Station = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [socketInstance, setSocketInstance] = useState(null);
   const [newStationPaused, setNewStationPaused] = useState(false);
+  const [stationCategories, setStationCategories] = useState({});
 
   const fadeAnim = useState(new Animated.Value(0))[0];
   const [modalAnim] = useState(new Animated.Value(0));
 
   const options = [
-    { title: 'Users', icon: 'users', screen: 'UserManagement' },
-    { title: 'Station', icon: 'tasks', screen: 'CategoryAssignment' },
-    { title: 'Menu', icon: 'utensils', screen: 'MenuManagement' },
-    { title: 'Order', icon: 'list', screen: 'OrderView' },
-    { title: 'Logout', icon: 'sign-out-alt', screen: 'Login' },
+    { title: "Users", icon: "users", screen: "UserManagement" },
+    { title: "Station", icon: "tasks", screen: "Station" },
+    { title: "Menu", icon: "utensils", screen: "MenuManagement" },
+    { title: "Order", icon: "list", screen: "OrderView" },
+    { title: "Dashboard", icon: "chart-line", screen: "Dashboard" },
+    { title: "Logout", icon: "sign-out-alt", screen: "Login" },
   ];
 
   const BASE_URL = 'http://localhost:3000';
+  const PRIMARY_API_URL = 'https://server.eatorder.fr:8000';
 
   useEffect(() => {
     const setup = async () => {
@@ -86,6 +99,7 @@ const Station = () => {
   useEffect(() => {
     if (storeId && socketInstance) {
       fetchStations();
+      fetchCategoriesForStations();
 
       Animated.timing(fadeAnim, {
         toValue: 1,
@@ -108,7 +122,6 @@ const Station = () => {
       });
 
       socketInstance.on('stationAdded', (station) => {
-        console.log('Station added via Socket.IO:', station);
         setStations((prev) => {
           if (prev.some((s) => s.id === station.id)) return prev;
           return [...prev, station];
@@ -116,22 +129,26 @@ const Station = () => {
       });
 
       socketInstance.on('stationUpdated', (station) => {
-        console.log('Station updated via Socket.IO:', station);
         setStations((prev) =>
           prev.map((s) => (s.id === station.id ? { ...s, name: station.name, is_paused: station.is_paused } : s))
         );
       });
 
       socketInstance.on('stationPaused', (station) => {
-        console.log('Station paused status updated via Socket.IO:', station);
         setStations((prev) =>
           prev.map((s) => (s.id === station.id ? { ...s, is_paused: station.is_paused } : s))
         );
       });
 
       socketInstance.on('stationDeleted', ({ id }) => {
-        console.log('Station deleted via Socket.IO:', id);
         setStations((prev) => prev.filter((s) => s.id !== id));
+      });
+
+      socketInstance.on('categoryAssigned', ({ stationId, category }) => {
+        setStationCategories((prev) => ({
+          ...prev,
+          [stationId]: [...(prev[stationId] || []), category],
+        }));
       });
 
       return () => {
@@ -141,15 +158,16 @@ const Station = () => {
         socketInstance.off('stationUpdated');
         socketInstance.off('stationPaused');
         socketInstance.off('stationDeleted');
+        socketInstance.off('categoryAssigned');
       };
     }
   }, [storeId, socketInstance, fadeAnim]);
 
-  // Rafraîchir les stations chaque fois que la page est revisitée
   useFocusEffect(
     React.useCallback(() => {
       if (storeId) {
         fetchStations();
+        fetchCategoriesForStations();
       }
     }, [storeId])
   );
@@ -167,8 +185,12 @@ const Station = () => {
       if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
 
       const data = await response.json();
-      console.log('Stations fetched:', data);
-      setStations(data); // Mettre à jour l'état avec les données exactes de la DB
+      const normalizedStations = (data || []).map((station) => ({
+        id: station.id || station._id,
+        name: station.name || 'Unnamed Station',
+        is_paused: station.is_paused || false,
+      }));
+      setStations(normalizedStations);
     } catch (error) {
       console.error('Error fetching stations:', error.message);
       setCustomAlert({
@@ -179,6 +201,24 @@ const Station = () => {
       });
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchCategoriesForStations = async () => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/client/getMenuByStore/${storeId}`);
+      if (!response.ok) throw new Error(`HTTP Error! Status: ${response.status}`);
+      const data = await response.json();
+      const categories = (data.categories || data.categorys || []).filter((cat) => cat.stationId);
+      const categoriesByStation = categories.reduce((acc, cat) => {
+        const stationId = cat.stationId;
+        if (!acc[stationId]) acc[stationId] = [];
+        acc[stationId].push({ id: cat._id || cat.id, name: cat.name });
+        return acc;
+      }, {});
+      setStationCategories(categoriesByStation);
+    } catch (error) {
+      console.error('Error fetching categories for stations:', error.message);
     }
   };
 
@@ -217,7 +257,7 @@ const Station = () => {
         body: JSON.stringify({
           name: newStationName.trim(),
           storeid: storeId,
-          is_paused: newStationPaused, // Assurer que l'état pausée est envoyé
+          is_paused: newStationPaused,
         }),
       });
 
@@ -227,7 +267,6 @@ const Station = () => {
       }
 
       const createdStation = await response.json();
-      console.log('Station created:', createdStation); // Log pour débogage
       setStations((prev) =>
         prev.map((s) => (s.id === tempId ? { ...createdStation, is_paused: createdStation.is_paused } : s))
       );
@@ -444,7 +483,7 @@ const Station = () => {
       <Sidebar options={options} />
       <View style={styles.content}>
         <Animated.View style={{ opacity: fadeAnim }}>
-          <Text style={styles.header}>Assignation des Catégories</Text>
+          <Text style={styles.header}>Stations</Text>
         </Animated.View>
 
         {isLoading && (
@@ -454,42 +493,47 @@ const Station = () => {
         )}
 
         <ScrollView style={styles.stationsList}>
-  {stations.map((station) => (
-    <View
-      key={station.id}
-      style={[styles.stationItem, station.is_paused && styles.stationPaused]}
-    >
-      <Text style={styles.stationText}>{station.name}</Text>
-      <View style={styles.buttonsContainer}>
-        <TouchableOpacity
-          onPress={() => togglePauseStation(station)}
-          style={styles.button}
-          disabled={isLoading}
-        >
-          <FontAwesome5
-            name={station.is_paused ? 'toggle-off' : 'toggle-on'}
-            size={20}
-            color={station.is_paused ? '#dc3545' : '#28a745'}
-          />
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => removeStation(station)}
-          style={styles.button}
-          disabled={isLoading}
-        >
-          <FontAwesome5 name="trash" size={20} color="#E73E01" />
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => openEditModal(station)}
-          style={styles.button}
-          disabled={isLoading}
-        >
-          <FontAwesome5 name="edit" size={20} color="#000000" />
-        </TouchableOpacity>
-      </View>
-    </View>
-  ))}
-</ScrollView>
+          {stations.map((station) => (
+            <View
+              key={station.id}
+              style={[styles.stationItem, station.is_paused && styles.stationPaused]}
+            >
+              <View>
+                <Text style={styles.stationText}>{station.name}</Text>
+                <Text style={styles.stationCategories}>
+                  Categories: {(stationCategories[station.id] || []).map((c) => c.name).join(', ') || 'None'}
+                </Text>
+              </View>
+              <View style={styles.buttonsContainer}>
+                <TouchableOpacity
+                  onPress={() => togglePauseStation(station)}
+                  style={styles.button}
+                  disabled={isLoading}
+                >
+                  <FontAwesome5
+                    name={station.is_paused ? 'toggle-off' : 'toggle-on'}
+                    size={20}
+                    color={station.is_paused ? '#dc3545' : '#28a745'}
+                  />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => removeStation(station)}
+                  style={styles.button}
+                  disabled={isLoading}
+                >
+                  <FontAwesome5 name="trash" size={20} color="#E73E01" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => openEditModal(station)}
+                  style={styles.button}
+                  disabled={isLoading}
+                >
+                  <FontAwesome5 name="edit" size={20} color="#000000" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
+        </ScrollView>
 
         {isAddingStation ? (
           <View style={styles.addStationContainer}>
@@ -623,14 +667,14 @@ const Station = () => {
                 >
                   {customAlert.title}
                 </Text>
-                <Text
-                  style={[
-                    styles.alertMessage,
-                    { color: customAlert.type === 'success' ? '#000000' : '#FFFFFF' },
-                  ]}
-                >
-                  {customAlert.message}
-                </Text>
+               <Text
+  style={[
+    styles.alertMessage,
+    { color: customAlert.type === 'success' ? '#000000' : '#FFFFFF' },
+  ]}
+>
+  {customAlert.message}
+</Text>
                 <View style={styles.alertButtons}>
                   {customAlert.onConfirm && (
                     <TouchableOpacity
@@ -735,6 +779,11 @@ const styles = StyleSheet.create({
     fontSize: 18 * fontScale,
     color: '#000000',
     fontWeight: '600',
+  },
+  stationCategories: {
+    fontSize: 14 * fontScale,
+    color: '#767577',
+    marginTop: 5,
   },
   buttonsContainer: {
     flexDirection: 'row',
@@ -927,6 +976,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-around',
   },
   alertButton: {
+    opacity: 1,
     paddingVertical: 12,
     paddingHorizontal: 25,
     borderRadius: 10,
